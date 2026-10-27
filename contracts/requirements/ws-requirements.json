@@ -1,0 +1,531 @@
+{
+  "$comment": "aitrance-chat WebSocket 协议需求书 v0.3.0。事实源为 backend/API.md 第 6 节与 backend/openapi.json 0.2.0。v0.1.0 中我方自拟的 5 个 C→S 帧与 18 个 S→C 帧已被后端实现收敛为 2 个 C→S 帧与 12 个 S→C 帧；发送消息与已读改走 REST，不存在 WS 发消息 ack。本文件记录后端实际帧集 + 前端对每帧的依赖强度 + 前端强制纪律。 v0.3.0（第二轮体验改造）新增第 13 个 S→C 帧 conversation.pins（置顶变化广播），并放宽附件可读范围；帧名/envelope/心跳/close code 一律未变。 本轮（上传能力）仅扩展 message.created 的 data.message 语义（type 增加 image/file、新增 attachment 字段），协议帧名、envelope、心跳、close code 均未变。",
+  "version": "0.3.0",
+  "supersedes": "0.2.0",
+  "protocolVersion": 1,
+  "openapiVersion": "0.2.0",
+  "sourceOfTruth": "backend/API.md 第 6 节",
+  "path": "/ws",
+  "urlShape": "ws://127.0.0.1:3001/ws?ticket=<ticket>&v=1",
+  "devUrlShape": "ws://localhost:5173/ws?ticket=<ticket>&v=1（经 Vite 代理，见 docs/06）",
+  "auth": {
+    "mechanism": "一次性短效 ticket，经 URL query 传递：ws://<host>/ws?ticket=<ticket>&v=1",
+    "ticketIssuer": "POST /api/v1/auth/ws-ticket（需 Bearer token），返回 {ticket, expiresIn: 30}",
+    "whyNotHeader": "浏览器 WebSocket API 不允许自定义请求头，无法带 Authorization",
+    "whyNotTokenInQuery": "sessionToken 出现在 URL 会进服务端 access log / 反代日志 / 浏览器历史。后端明示「不得把长期 token 放到 URL 中」。",
+    "ticketSemantics": [
+      "【必】一次性：握手成功即作废，重放必须拒绝（后端 4001）",
+      "【必】TTL 30 秒",
+      "【必】票据 TTL 不控制已连接寿命；握手成功后票据过期不得断开连接。会话 token 仍会持续校验（心跳最多 30 秒一次）。",
+      "【必】每次建立或重建连接都必须申请新 ticket，客户端禁止缓存",
+      "【必】票据获取失败不影响已建立的连接",
+      "【必】同一**用户**最多 5 条 WS 连接（跨 session 累计，非每 session 5 条），超出以 1008 关闭"
+    ],
+    "originCheck": "【必】服务端必须校验 Origin 头（WebSocket 不受 CORS 约束，这是 WS 的 CSRF 面）",
+    "vQueryParam": "v 查询参数默认 1；不支持的 v 以 4002 关闭"
+  },
+  "envelope": {
+    "description": "服务端→客户端的所有事件共用此信封。客户端→服务端帧为简化形状，见 clientToServer。",
+    "serverToClient": {
+      "type": "object",
+      "required": [
+        "v",
+        "id",
+        "type",
+        "timestamp",
+        "data"
+      ],
+      "properties": {
+        "v": {
+          "const": 1,
+          "description": "协议版本。不匹配则客户端提示刷新并停止重连"
+        },
+        "id": {
+          "type": "string",
+          "description": "事件 UUID，由服务端生成"
+        },
+        "type": {
+          "type": "string",
+          "description": "事件类型，见 serverToClientEvents"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 UTC 毫秒"
+        },
+        "data": {
+          "type": "object",
+          "description": "类型相关载荷，见 serverToClientEvents[].data"
+        }
+      },
+      "additionalProperties": true
+    },
+    "clientToServer": {
+      "type": "object",
+      "required": [
+        "v",
+        "type"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "ping",
+            "typing"
+          ]
+        }
+      },
+      "additionalProperties": true,
+      "note": "客户端帧不带 id / timestamp，也无需服务端回执。唯一例外：typing 需额外携带 conversationId 与 active。"
+    },
+    "namingDiscipline": "本协议中不存在连接级 seq 字段（v0.1 的 Envelope.seq 与 lastConnSeq 已废弃）。唯一序号是 Message.seq（会话级）。前端必须以连接状态 + 事件去重保证一致性，不能靠连接级序号检测丢帧。这使「缺口检测」只能依赖 Message.seq 的连续性，前端已按此实现。"
+  },
+  "clientToServer": [
+    {
+      "type": "ping",
+      "required": true,
+      "frame": {
+        "v": 1,
+        "type": "ping"
+      },
+      "data": null,
+      "note": "应用层心跳。传输层另有每 30 秒的协议 ping，浏览器自动处理控制帧。前端建议每 25 秒发一次应用层 ping；发现连续下一轮无 pong 则终止并重连。"
+    },
+    {
+      "type": "typing",
+      "required": true,
+      "frame": {
+        "v": 1,
+        "type": "typing",
+        "conversationId": "<uuid>",
+        "active": true
+      },
+      "data": {
+        "type": "object",
+        "required": [
+          "conversationId",
+          "active"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "note": "字段为 active（布尔），非 v0.1 提案的 state:'start'|'stop'。后端要求前端节流（建议最多每 2 秒一次）；前端 5 秒无更新自动移除输入提示。"
+    }
+  ],
+  "serverToClientEvents": [
+    {
+      "type": "ready",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "userId"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "serverTime": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 UTC；与信封 timestamp 相同。前端优先用它做时钟偏移，缺失才退回信封 timestamp"
+          },
+          "protocolVersion": {
+            "const": 1,
+            "description": "信封协议版本，固定数字 1。注意区别于实现版本 0.2.0；不匹配则前端停重连并提示刷新"
+          }
+        }
+      },
+      "frontendReaction": "取 data.serverTime（缺失退回信封 timestamp）做时钟偏移校正；若 data.protocolVersion 存在且 !== 1，停重连并提示刷新；重置退避计数；随后启动补偿编排（见 compensationFlow）。",
+      "diff": "v0.1 拟 ready 携带 connectionId/serverTime/protocolVersion/heartbeatIntervalMs/sessionExpiresAt/features。后端 v0.2.0 ACT（已落地）为 {userId,serverTime,protocolVersion:1} —— serverTime 与 protocolVersion 已采纳，其余三项未采纳。",
+      "gap": "【降级项】因无 heartbeatIntervalMs，前端使用自己的常量 25s；因无 sessionExpiresAt，前端只用本地 localStorage 的 expiresAt 做续期调度；因无 features，前端不做特性降级，按全功能渲染 —— 若后端某能力未实现，靠 REST 错误码降级。非阻塞项。"
+    },
+    {
+      "type": "pong",
+      "required": true,
+      "data": {
+        "type": "object",
+        "properties": {}
+      },
+      "frontendReaction": "刷新看门狗；不回显 clientTs（v0.1 曾要求回显以便测 RTT，后端未实现）。前端因此无法精确测 RTT，改用「收到任意帧即活性」的看门狗策略。",
+      "diff": "v0.1 拟 pong 回显 clientTs 用于 RTT。后端为空对象。已接受。"
+    },
+    {
+      "type": "message.created",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "message",
+          "unreadCount"
+        ],
+        "properties": {
+          "message": {
+            "$ref": "rest-requirements.json#/definitions/Message"
+          },
+          "unreadCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "每个接收者自己的未读数（个性化），因此不能跨用户复用同一份帧内容"
+          }
+        }
+      },
+      "frontendReaction": "缺口检测（seq 跳跃即触发 REST afterSeq 补齐）→ insertOrIgnore 去重 → 更新会话列表预览与未读。含发送者自己的所有连接（多端同步）。附件消息与文本消息走同一条通道，renderByType 需按 message.type（text/system/image/file）分派；image 走带 Authorization 的 fetch → blob URL 渲染，file 显示文件名/大小与下载入口。",
+      "diff": "v0.1 拟事件名 message.new 且无 unreadCount；后端为 message.created 且带个性化 unreadCount。前端已按后端命名与字段适配。本轮上传扩展后，data.message 的 type 可能为 image/file，并带有恒存在的可空字段 attachment（纯文本/system 为 null）。事件名、外层载荷形状、unreadCount 语义均未变化，故不构成协议形状变更。",
+      "note": "【关键】消息发送走 REST（POST /conversations/:id/messages），不存在 WS 的 message.send 帧与 message.ack 帧。自己发的消息会从 REST 返回，同时也会经本事件推给自己所有连接 —— 两条路径必须经同一去重入口。【附件】附件消息同样只走 REST：先 POST /api/v1/uploads 上传拿 id，再用该 id 发消息；本事件的 data.message 会带 attachment，前端不再额外拉取元数据。附件没有独立的 WS 事件（没有 upload.created / attachment.* 帧），上传完成是 REST 同步返回。因此附件气泡的渲染必须容错：收到 message.created 时若本地还没有 blob URL，先占位再异步取字节。"
+    },
+    {
+      "type": "conversation.created",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "conversation"
+        ],
+        "properties": {
+          "conversation": {
+            "$ref": "rest-requirements.json#/definitions/Conversation"
+          }
+        }
+      },
+      "frontendReaction": "upsert 到会话列表。用于：别人给我建了私聊 / 我被拉进群。",
+      "note": "会话对象按接收者个性化（title/peer/unreadCount 都是我的视角），因此不能跨用户缓存复用。"
+    },
+    {
+      "type": "conversation.updated",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "conversation"
+        ],
+        "properties": {
+          "conversation": {
+            "$ref": "rest-requirements.json#/definitions/Conversation"
+          }
+        }
+      },
+      "frontendReaction": "upsert 且默认保持列表位置（避免正在阅读时列表跳动）；仅当 updatedAt 变新时才重排。用于：群名变更、成员增删、他人已读导致我的未读变化等。"
+    },
+    {
+      "type": "conversation.removed",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "conversationId"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "frontendReaction": "从列表移除该会话 + toast 提示「你已被移出群聊」。这是被移除者的唯一通知路径。",
+      "diff": "v0.1 拟 payload {conversationId, reason}；后端只给 conversationId。前端不依赖 reason。",
+      "gap": "【注意】v0.1 拟的 conversation.member.changed 帧后端并未实现。前端不得依赖它判定「自己是否被移除」—— 只能用本帧。他人视角的成员变更由 conversation.updated 携带完整 members 数组覆盖，前端整体替换即可。"
+    },
+    {
+      "type": "conversation.read",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "conversationId",
+          "userId",
+          "lastReadSeq",
+          "unreadCount"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "userId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "读者；可能是自己（多端同步）"
+          },
+          "lastReadSeq": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unreadCount": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "接收者自己的未读数 —— 注意不是 userId 的未读数"
+          }
+        }
+      },
+      "frontendReaction": "【前端规则，两条分支都必须落】(a) 无条件采用 data.unreadCount 覆盖本地未读数 —— 这是权威值，因为「读到历史位置不一定把未读清零」，前端不可自行推断；(b) 若 userId === 自己（多端场景，另一台设备读的）→ 应用于**我自己的** lastReadSeq 与 unreadCount，保证多端红点一致；若 userId 是他人 → 更新该成员的已读游标，用于单聊「已读」标记与群聊「N 人已读」。",
+      "diff": "v0.1 拟事件名 message.read.updated；后端为 conversation.read。【已修正】v0.1 曾规定「userId===自己时忽略」，与多端红点一致性和 handlers.ts 已落地行为相反，现改为必须应用。",
+      "note": "【关键语义】本事件是未读数的唯一权威来源。REST read 返回 204 无正文，所以前端在本地乐观清零之后，必须靠本事件把真实剩余未读校准回来（含自己其他连接触发的读）。"
+    },
+    {
+      "type": "conversation.pins",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "conversationId",
+          "pins"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "pins": {
+            "type": "array",
+            "items": {
+              "$ref": "rest-requirements.json#/definitions/PinnedMessage"
+            },
+            "description": "该会话当前的完整置顶列表（pinnedAt 倒序，最多 50 条）。"
+          }
+        }
+      },
+      "frontendReaction": "整体替换本地置顶列表（不是增量）；若当前没有打开该会话则先缓存，等切换过去再用。不要按 seq 重排 —— 顺序由后端 pinnedAt 决定。",
+      "note": "置顶/取消置顶后广播给会话全体成员（包括操作者本人）：操作者也不用把 POST/DELETE 的响应和自己本地状态做合并，一律以本帧为准。载荷给的是完整列表而非单条变更，因为置顶列表很短（上限 50），整体替换比增量对账更不容易出错。"
+    },
+    {
+      "type": "friend.requested",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "request"
+        ],
+        "properties": {
+          "request": {
+            "$ref": "rest-requirements.json#/definitions/FriendRequest"
+          }
+        }
+      },
+      "frontendReaction": "加入待处理申请列表 + toast「XX 请求添加你为好友」。申请双方都会收到，前端按 sender.id === selfId 区分。",
+      "diff": "v0.1 拟事件名 friend.request；后端为 friend.requested。"
+    },
+    {
+      "type": "friend.resolved",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "request"
+        ],
+        "properties": {
+          "request": {
+            "$ref": "rest-requirements.json#/definitions/FriendRequest"
+          }
+        }
+      },
+      "frontendReaction": "按 request.status 区分接受/拒绝：accepted 则移入好友列表 + toast；rejected 则移出待处理列表。申请双方都会收到。",
+      "diff": "v0.1 拟两个事件 friend.accepted（payload 含 friend + conversation）与 friend.removed；后端合并为单个 friend.resolved，且 payload 只有 request。",
+      "gap": "【重要降级】v0.1 拟 friend.accepted 直接携带 conversation，让前端能立刻插入新会话。后端不提供 —— 因此前端在 accept 后必须显式调 POST /conversations/direct 才拿到会话。若产品上希望「通过后立刻出现聊天入口」，前端应在用户点击「发消息」时懒调用该端点（后端幂等，安全）。"
+    },
+    {
+      "type": "presence.changed",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "userId",
+          "online"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "online": {
+            "type": "boolean"
+          }
+        }
+      },
+      "frontendReaction": "更新在线圆点。推送范围为好友与同群成员。",
+      "diff": "v0.1 拟事件名 presence.updated 且带 lastSeenAt；后端为 presence.changed 且无 lastSeenAt。",
+      "gap": "【降级项】无 lastSeenAt，故前端无法显示「最后在线 X 分钟前」，只能显示在线/离线两态。若产品需要该信息，需后端追加字段。后端明示 presence 为单进程瞬时状态，刷新列表可校准。"
+    },
+    {
+      "type": "typing.changed",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "conversationId",
+          "userId",
+          "active"
+        ],
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      },
+      "frontendReaction": "active=true 记 expiresAt = now + 6s；active=false 立即清除。前端必须带本地超时清理，不能信任对端一定发 active:false（关页面/断网就没有了）。服务端不会把它推回给发送者本人。",
+      "diff": "v0.1 拟事件名 typing 且 state:'start'|'stop'；后端为 typing.changed 且 active 布尔。"
+    },
+    {
+      "type": "error",
+      "required": true,
+      "data": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "当前后端仅定义 INVALID_EVENT"
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      },
+      "frontendReaction": "记录 warn + 检查出站帧构造。不重连、不断开。",
+      "diff": "v0.1 拟复用完整错误码表 + details；后端只定义 INVALID_EVENT 且无 details。"
+    }
+  ],
+  "heartbeat": {
+    "transportPing": "服务端每 30 秒协议层 ping；浏览器自动回 pong。连续下一轮无 pong 则服务端终止。",
+    "appPing": {
+      "frame": {
+        "v": 1,
+        "type": "ping"
+      },
+      "clientIntervalMs": 25000,
+      "note": "前端应用层心跳；后端回 pong（空 data）"
+    },
+    "watchdog": "任意帧都算活性；2× 心跳间隔（50 秒）内零帧则前端强制 close() 并进入重连。用于发现半开连接（TCP 无错但报文不再到达）。",
+    "reconnectBackoff": "1s→2s→4s→8s→16s→30s 上限，±20% 抖动；收到 ready 重置。",
+    "reconnectLimit": "无限重试（长连接聊天不能放弃），退避封顶 30 秒；连续 10 次失败提示「网络异常」。",
+    "typingThrottle": "前端首次按键立即发 active:true，此后每 3 秒最多一次；停手 5 秒或发消息/切会话/失焦时发 active:false。展示侧 6 秒 TTL 自动清理。"
+  },
+  "ordering": {
+    "rule": "始终按 Message.seq 升序。绝不用 createdAt 排序（时钟偏移会导致消息跳跃）。",
+    "dedup": [
+      "层1 pendingByClientMsgId: Map<clientMsgId, LocalMessage> —— 关联本地乐观消息与服务端确认",
+      "层2 confirmedById: Set<msgId> —— 应对 WS 推送与 REST 分页/同步补齐的重叠",
+      "层3 服务端幂等 (senderId, clientMsgId) 唯一索引 + 同内容重试返回 200 原消息 —— 网络重试不产生重复"
+    ],
+    "singleEntry": "所有插入收敛到一个 insertOrIgnore(msg) 入口，避免第二套合并逻辑",
+    "gapDetection": "维护 lastSeqByConv；收到 message.created 时若 message.seq > 本地 lastSeq + 1 → 中间丢帧 → 立即对该会话发起 REST afterSeq 补齐。注意本协议无连接级 seq，故缺口检测只能依赖 Message.seq 的连续性。",
+    "systemMessages": "system 消息与 text 消息共享同一 seq 空间并占用连续编号 —— 因此缺口检测不会因 system 消息误报。前端须把它们插入同一有序列表（渲染为居中的灰色提示条）。"
+  },
+  "compensationFlow": {
+    "trigger": "每次收到 ready（含重连）后执行。后端服务重启或断线不重放 WS 事件，消息可靠性通过 SQLite + REST 保证。",
+    "steps": [
+      "1. 先建 WS 并开始缓存事件（未 ready 前不消费；ready 后按到达顺序消费，与补偿结果一并去重）",
+      "2. GET /api/v1/conversations（limit=200, offset=0）刷新全部会话的 lastMessage / unreadCount / lastReadSeq / 排序 / members / title / peer —— 一次调用同时修正多项；这是「断线期间好友、成员、presence 事件」的唯一校正途径",
+      "3. 对本地仍有权限的会话，按本地连续 seq 逐页补偿：优先 POST /api/v1/sync（cursors 按会话去重、≤100 个一批），或直接 GET /messages?afterSeq=<lastSeq>&limit=100 反复分页直到 hasMore=false",
+      "4. 合并步骤 1 缓存的事件：全部经 insertOrIgnore 去重（实时推送与补偿结果必然重叠）",
+      "5. 重发 outbox 中待发消息：按 per-conversation 保序依次调用 REST 发消息接口，必须复用原 clientMsgId（服务端幂等保证不重复）",
+      "6. 若某会话 sync 返回 404 → 先从会话列表移除该项（已退群/被移除），再重试其余会话"
+    ],
+    "hasMoreRule": "sync 的 hasMore 为真时只推进到 nextSeq，禁止直接跳到 lastSeq，否则漏消息。前端实现为循环调用直到 hasMore=false，并设安全上限（防异常大缺口无限循环）。",
+    "degradation": "即便后端 sync 端点不可用，前端也能仅靠 GET /messages?afterSeq= 完成完整补偿 —— 这条 REST 兜底路径是先实现项，不依赖 sync。"
+  },
+  "multiDevice": "服务端维护连接注册表 Map<userId, Set<connection>>，用户任一端发出的消息都会广播给该用户**所有**连接（含发送者自己）。【已修正】conversation.read 中 userId === 自己时**必须应用**其 lastReadSeq 与 unreadCount —— 这是多端红点一致的依据，不能忽略。【已修正】连接数上限是每个**用户**跨 session 累计 5 条（非每 session 5 条），超出以 1008 关闭。客户端层2 去重保证不重复渲染。本期前端不做多端切换 UI。",
+  "serverRuntimeConstraints": {
+    "frameRateLimit": "每连接最多 30 帧/10 秒（超出以 1008 关闭）",
+    "frameSizeLimit": "单帧最多 4 KiB（超出以 1009 关闭）；拒绝二进制帧",
+    "slowConsumer": "积压超过 1 MiB 主动断开（1013）",
+    "connectionLimit": "每个**用户**跨 session 累计最多 5 条 WS 连接（超出以 1008 关闭） —— 依据 backend/src/realtime.ts 的 clients: Map<userId, Set<Client>> 按 userId 计数",
+    "originCheck": "必须校验 Origin 头（WS 无 CORS 保护）",
+    "sessionCheck": "登录过期在收发业务事件前以及最多每 30 秒一次心跳中检查；**【必】过期/注销以 4003 关闭**（不是 1008）—— 4003 是前端登出信号，1008 只表示超连接数/超帧频，两者不可混用",
+    "restartBehavior": "服务重启或断线不重放 WS 事件；不把 WS 当作持久化事件队列"
+  },
+  "clientDesignNotes": {
+    "responsibilitySplit": "ws/ticket.ts 只管取票（单飞、禁缓存、失败分类）；ws/client.ts 只管连接生命周期（握手、心跳、看门狗、退避、帧校验与分发）；ws/handlers.ts 只管把帧翻译成 store 操作；三者互不认识对方的内部，避免循环依赖。",
+    "boundaryValidation": "入站帧在分发前必须过 zod safeParse，解析失败即丢弃并 warn —— 后端独立开发，帧结构漂移是必然事件，必须在边界失败而不是让脏数据流进 store。",
+    "outboundValidation": "出站帧在发送前同样 parse 一次，保证不会因为手误发出结构不符的帧。",
+    "restIsPrimaryForWrites": "发送消息与已读一律走 REST。好处：原生幂等、状态码明确、重试简单、可脱离 WS 单独验证。WS 只承载推送与 typing。",
+    "noConnectionSeq": "v0.1 的 Envelope.seq（连接级）已废弃。前端不得发明连接级序号做丢帧检测，唯一依据是 Message.seq 的连续性。"
+  },
+  "closeCodes": {
+    "$comment": "事实源：backend/API.md 第 6 节关闭码表（v0.2.0）。v0.1 自拟的 4003/4004/4029/1011 中，4003 已被后端采纳；其余删除。",
+    "semantics": "【必】4003 与 1008 语义必须分开：4003=session 层失效（登出信号），1008=连接层限流（退避信号）。混用会让前端无法判断该登出还是该重连。",
+    "serverEmitted": [
+      {
+        "code": 4001,
+        "meaning": "ticket 缺失/格式错误/失效/已用",
+        "frontend": "重新申请 ticket 后重连（可自愈，不走退避）；若同期 REST 返回 401 则改为登出"
+      },
+      {
+        "code": 4002,
+        "meaning": "不支持的 v（协议版本不匹配）",
+        "frontend": "提示刷新/更新前端；不盲目重连，避免无限刷日志"
+      },
+      {
+        "code": 4003,
+        "meaning": "session 过期或已注销",
+        "frontend": "**【必】停止自动重连**，清登录状态并跳登录；**禁止对失效 token 调 refresh**（后端语义：refresh 只接受仍有效的 token）"
+      },
+      {
+        "code": 1003,
+        "meaning": "收到二进制帧（不受支持）",
+        "frontend": "视作客户端缺陷：停止重连并打日志；前端只发 JSON 文本帧"
+      },
+      {
+        "code": 1008,
+        "meaning": "超出连接数上限（每用户 5 条）或超出帧频（30 帧/10 秒）",
+        "frontend": "退避重连；**不得据此登出**（session 失效已由 4003 承载）"
+      },
+      {
+        "code": 1009,
+        "meaning": "单帧超过 4 KiB",
+        "frontend": "客户端缺陷：检查出站帧体积（严禁把大 payload 塞进 WS）"
+      },
+      {
+        "code": 1013,
+        "meaning": "慢消费者，服务端积压超 1 MiB 主动断开",
+        "frontend": "退避重连并走一次 REST 补偿"
+      },
+      {
+        "code": 1006,
+        "meaning": "非正常断连或心跳超时",
+        "frontend": "指数退避 + 获取新票据后重连"
+      }
+    ],
+    "clientSynthetic": [
+      {
+        "code": 1000,
+        "meaning": "客户端主动正常关闭（登出、路由离开）",
+        "frontend": "不重连"
+      },
+      {
+        "code": 1001,
+        "meaning": "客户端看门狗超时后主动关闭",
+        "frontend": "由 ws/client.ts 自行发起；关闭后照常退避重连"
+      }
+    ]
+  },
+  "contractGateCoverage": {
+    "$comment": "【必读】check-contract.mjs 的覆盖是**不完整**的，不得据此宣称「与后端实现零差异」。",
+    "restCovered": "结构完整性（path+method+成功码）、字段级（摊平后逐字段比类型/required/枚举）—— 这三类对 REST 是机械可验的。",
+    "wsNotCovered": "WS 侧脚本**只**校验 ws-requirements.openapiVersion 与 openapi.info.version 是否一致，**不校验帧名、帧 data 结构、关闭码语义、多端规则**。这些目前靠人工核对 backend/src/realtime.ts 与 API.md。",
+    "correctClaim": "REST：可用「ERROR 0 / WARN 0 = 与 openapi.json 零差异」。WS：只能说「人工核对，未机械验证」—— 不要写成零差异。",
+    "futureWork": "若要机械覆盖 WS，需要后端提供机器可读的帧 schema（当前 API.md 是 Markdown 表，不可机读）。"
+  }
+}

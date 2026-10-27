@@ -1,0 +1,31 @@
+[Unit]
+Description=AITrance Chat API and WebSocket service
+After=network.target
+
+[Service]
+Type=simple
+User=aitrance
+Group=aitrance
+WorkingDirectory=/opt/aitrance/current/backend
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/aitrance/chat.env
+ExecStart=/opt/aitrance/runtime/bin/node /opt/aitrance/current/backend/dist/src/server.js
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=20
+StateDirectory=aitrance
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aitrance
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

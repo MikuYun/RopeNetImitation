@@ -1,0 +1,17 @@
+
+=== pm 门禁回归  BASE=http://localhost:5173  BACKEND=http://127.0.0.1:3099 ===
+
+会话：ef1c488c-98d4-4e2f-83c4-2e75bdedeaac
+
+
+──── SEC-02 注销后的隐私清理 ────
+脚本异常： page.goto: net::ERR_CONNECTION_REFUSED at http://localhost:5173/chat/ef1c488c-98d4-4e2f-83c4-2e75bdedeaac
+Call log:
+  - navigating to "http://localhost:5173/chat/ef1c488c-98d4-4e2f-83c4-2e75bdedeaac", waiting until "domcontentloaded"
+
+    at main (B:\AITrance\frontend\e2e-gates.mjs:247:16) {
+  log: [
+    '  - navigating to "http://localhost:5173/chat/ef1c488c-98d4-4e2f-83c4-2e75bdedeaac", waiting until "domcontentloaded"'
+  ],
+  name: 'Error'
+}

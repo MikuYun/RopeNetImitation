@@ -1,0 +1,149 @@
+
+=== 响应式验收  BASE=http://localhost:5173  BACKEND=http://127.0.0.1:3099 ===
+
+账号准备：e2e_a=409 e2e_b=409（201=新建 409=已存在）
+会话数据：convId=bf99154d-32ea-474f-9105-7bf0d02cbbae
+
+
+──── 视口 320x568（最窄支持） ────
+PASS  320x568 无横向溢出  —— doc=320 body=320 view=320
+PASS  320x568 底部导航存在（2 tab + 更多）  —— tab 数=3
+PASS  320x568 手机不渲染 PC 竖侧栏  —— rail 可见=false
+PASS  320x568 列表屏不含消息正文（互斥）  —— 正文可见=false
+PASS  320x568 热区 >= 44x44  —— （全部合格）
+PASS  320x568 可切到联系人屏
+PASS  320x568 联系人 无横向溢出  —— doc=320 body=320 view=320
+PASS  320x568 联系人 热区 >= 44x44  —— （全部合格）
+PASS  320x568 可进入会话正文
+PASS  320x568 正文 无横向溢出  —— doc=320 body=320 view=320
+PASS  320x568 正文 热区 >= 44x44  —— （全部合格）
+PASS  320x568 正文屏隐藏底部导航  —— mnav 可见=false
+PASS  320x568 顶部返回可回列表  —— url=http://localhost:5173/chat
+PASS  320x568 可进入会话详情  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae/info
+PASS  320x568 详情 无横向溢出  —— doc=320 body=320 view=320
+PASS  320x568 详情 热区 >= 44x44  —— （全部合格）
+PASS  320x568 详情返回聊天  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae
+PASS  320x568 更多面板含主题与注销  —— 项数=2
+PASS  320x568 更多面板 无横向溢出  —— doc=320 body=320 view=320
+PASS  320x568 更多面板 热区 >= 44x44  —— （全部合格）
+PASS  320x568 主题可切换  —— theme=dark
+
+──── 视口 360x800（常见安卓） ────
+PASS  360x800 无横向溢出  —— doc=360 body=360 view=360
+PASS  360x800 底部导航存在（2 tab + 更多）  —— tab 数=3
+PASS  360x800 手机不渲染 PC 竖侧栏  —— rail 可见=false
+PASS  360x800 列表屏不含消息正文（互斥）  —— 正文可见=false
+PASS  360x800 热区 >= 44x44  —— （全部合格）
+PASS  360x800 可切到联系人屏
+PASS  360x800 联系人 无横向溢出  —— doc=360 body=360 view=360
+PASS  360x800 联系人 热区 >= 44x44  —— （全部合格）
+PASS  360x800 可进入会话正文
+PASS  360x800 正文 无横向溢出  —— doc=360 body=360 view=360
+PASS  360x800 正文 热区 >= 44x44  —— （全部合格）
+PASS  360x800 正文屏隐藏底部导航  —— mnav 可见=false
+PASS  360x800 顶部返回可回列表  —— url=http://localhost:5173/chat
+PASS  360x800 可进入会话详情  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae/info
+PASS  360x800 详情 无横向溢出  —— doc=360 body=360 view=360
+PASS  360x800 详情 热区 >= 44x44  —— （全部合格）
+PASS  360x800 详情返回聊天  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae
+PASS  360x800 更多面板含主题与注销  —— 项数=2
+PASS  360x800 更多面板 无横向溢出  —— doc=360 body=360 view=360
+PASS  360x800 更多面板 热区 >= 44x44  —— （全部合格）
+PASS  360x800 主题可切换  —— theme=dark
+
+──── 视口 390x844（iPhone 14） ────
+PASS  390x844 无横向溢出  —— doc=390 body=390 view=390
+PASS  390x844 底部导航存在（2 tab + 更多）  —— tab 数=3
+PASS  390x844 手机不渲染 PC 竖侧栏  —— rail 可见=false
+PASS  390x844 列表屏不含消息正文（互斥）  —— 正文可见=false
+PASS  390x844 热区 >= 44x44  —— （全部合格）
+PASS  390x844 可切到联系人屏
+PASS  390x844 联系人 无横向溢出  —— doc=390 body=390 view=390
+PASS  390x844 联系人 热区 >= 44x44  —— （全部合格）
+PASS  390x844 可进入会话正文
+PASS  390x844 正文 无横向溢出  —— doc=390 body=390 view=390
+PASS  390x844 正文 热区 >= 44x44  —— （全部合格）
+PASS  390x844 正文屏隐藏底部导航  —— mnav 可见=false
+PASS  390x844 顶部返回可回列表  —— url=http://localhost:5173/chat
+PASS  390x844 可进入会话详情  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae/info
+PASS  390x844 详情 无横向溢出  —— doc=390 body=390 view=390
+PASS  390x844 详情 热区 >= 44x44  —— （全部合格）
+PASS  390x844 详情返回聊天  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae
+PASS  390x844 更多面板含主题与注销  —— 项数=2
+PASS  390x844 更多面板 无横向溢出  —— doc=390 body=390 view=390
+PASS  390x844 更多面板 热区 >= 44x44  —— （全部合格）
+PASS  390x844 主题可切换  —— theme=dark
+
+──── 视口 430x932（iPhone Pro Max） ────
+PASS  430x932 无横向溢出  —— doc=430 body=430 view=430
+PASS  430x932 底部导航存在（2 tab + 更多）  —— tab 数=3
+PASS  430x932 手机不渲染 PC 竖侧栏  —— rail 可见=false
+PASS  430x932 列表屏不含消息正文（互斥）  —— 正文可见=false
+PASS  430x932 热区 >= 44x44  —— （全部合格）
+PASS  430x932 可切到联系人屏
+PASS  430x932 联系人 无横向溢出  —— doc=430 body=430 view=430
+PASS  430x932 联系人 热区 >= 44x44  —— （全部合格）
+PASS  430x932 可进入会话正文
+PASS  430x932 正文 无横向溢出  —— doc=430 body=430 view=430
+PASS  430x932 正文 热区 >= 44x44  —— （全部合格）
+PASS  430x932 正文屏隐藏底部导航  —— mnav 可见=false
+PASS  430x932 顶部返回可回列表  —— url=http://localhost:5173/chat
+PASS  430x932 可进入会话详情  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae/info
+PASS  430x932 详情 无横向溢出  —— doc=430 body=430 view=430
+PASS  430x932 详情 热区 >= 44x44  —— （全部合格）
+PASS  430x932 详情返回聊天  —— url=http://localhost:5173/chat/bf99154d-32ea-474f-9105-7bf0d02cbbae
+PASS  430x932 更多面板含主题与注销  —— 项数=2
+PASS  430x932 更多面板 无横向溢出  —— doc=430 body=430 view=430
+PASS  430x932 更多面板 热区 >= 44x44  —— （全部合格）
+PASS  430x932 主题可切换  —— theme=dark
+
+──── 视口 844x390（横屏短高） ────
+PASS  844x390 无横向溢出  —— doc=844 body=844 view=844
+PASS  844x390 显示 PC 竖侧栏
+PASS  844x390 显示会话列表栏
+PASS  844x390 不显示手机底部导航
+PASS  844x390 侧栏可切到联系人
+PASS  844x390 联系人 无横向溢出  —— doc=844 body=844 view=844
+PASS  844x390 短高度下输入区与发送键仍可达  —— 发送键 bottom=380 输入框 top=274/bottom=341 视口高=390
+PASS  844x390 短高度下详情页可读  —— 详情宽=544 视口宽=844 高=325 视口高=390
+
+──── 视口 768x1024（平板） ────
+PASS  768x1024 无横向溢出  —— doc=768 body=768 view=768
+PASS  768x1024 显示 PC 竖侧栏
+PASS  768x1024 显示会话列表栏
+PASS  768x1024 不显示手机底部导航
+PASS  768x1024 侧栏可切到联系人
+PASS  768x1024 联系人 无横向溢出  —— doc=768 body=768 view=768
+
+──── 视口 1024x768（PC 小） ────
+PASS  1024x768 无横向溢出  —— doc=1024 body=1024 view=1024
+PASS  1024x768 显示 PC 竖侧栏
+PASS  1024x768 显示会话列表栏
+PASS  1024x768 不显示手机底部导航
+PASS  1024x768 侧栏可切到联系人
+PASS  1024x768 联系人 无横向溢出  —— doc=1024 body=1024 view=1024
+
+──── 视口 1440x900（PC 大） ────
+PASS  1440x900 无横向溢出  —— doc=1440 body=1440 view=1440
+PASS  1440x900 显示 PC 竖侧栏
+PASS  1440x900 显示会话列表栏
+PASS  1440x900 不显示手机底部导航
+PASS  1440x900 侧栏可切到联系人
+PASS  1440x900 联系人 无横向溢出  —— doc=1440 body=1440 view=1440
+
+──── 断点边界 767↔768 / 1023↔1024 ────
+PASS  767px 是手机态（底部导航在、竖侧栏不在）  —— mnav=true rail=false
+PASS  768px 是平板态（竖侧栏在、底部导航不在）  —— mnav=false rail=true viewW=768
+PASS  768 无横向溢出  —— doc=768 body=768 view=768
+PASS  1023 无横向溢出  —— doc=1023 body=1023 view=1023
+PASS  1024px 是桌面态（侧栏回到 60px）  —— railW=60
+PASS  1024 无横向溢出  —— doc=1024 body=1024 view=1024
+PASS  跨断点未重建 WS（连接数不增长）  —— 切换前=2 切换后=2
+
+=== 汇总：117 项断言，0 项失败 ===
+
+截图见 docs/evidence/resp-*.png
+注意：这是视口模拟，不是真机。软键盘/安全区/横竖屏真机行为仍属「待真机验证」。
+
+
+EXIT=0

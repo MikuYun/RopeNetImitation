@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      viewport-fit=cover 让内容延伸到刘海/圆角区域，配合 env(safe-area-inset-*)
+      使用；不加它时 env() 恒为 0，底部手势条会压住导航与发送键。
+      【不要加 user-scalable=no / maximum-scale=1】那会禁用页面缩放，无障碍不允许。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="format-detection" content="telephone=no" />
+    <title>aitrance-chat</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

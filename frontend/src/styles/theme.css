@@ -1,0 +1,331 @@
+/* ============================================================================
+ * aitarance-chat 设计令牌层（Design Tokens）
+ * ----------------------------------------------------------------------------
+ * 全站唯一的「换皮 / 调风格」入口。分四段：
+ *   ① @theme        品牌与中性色阶（Tailwind v4 会据此生成 color 工具类）
+ *   ② :root         与主题无关的度量令牌：间距 / 字号 / 行高 / 圆角 / 阴影 /
+ *                   动效 / 层级，全部集中在这里，组件里不再出现裸数值
+ *   ③ :root         亮色主题的语义色（surface / text / border / 气泡 / 阴影色）
+ *   ④ [data-theme]  深色主题的语义色（不是简单反色，而是重新配平的中性面）
+ *
+ * 合规要求：不使用任何第三方产品的名称、logo、图标素材或专有配色。
+ * 下方色值为原创色板，主色方向为「青蓝 → 青绿」双色相，与任何既有产品无关。
+ *
+ * 【命名约定】
+ *   --color-      原始色阶（raw palette，只允许在 :root 语义映射里引用）
+ *   --app-        语义面（surface / text / border / hover）
+ *   --space-      间距阶（8pt 体系：2/4/6/8/12/16/20/24/32）
+ *   --text-       字号阶（11/12/13/14/16/20/24/30）
+ *   --radius-     圆角阶（6/10/14/18/999）
+ *   --shadow-     阴影三级（1 贴地 / 2 悬浮 / 3 弹层）
+ *   --dur-  /  --ease-   动效时长与缓动
+ *   --z-          层级
+ * ========================================================================== */
+
+@theme {
+  /* ── 主色：青蓝（原创）─────────────────────────────────────────────
+   * 在原有色相上做了两处精修：中段（300–500）饱和度略提，末段（700–900）
+   * 加深一档，使渐变与阴影更有「立体感」，避免灰扑扑的观感。 */
+  --color-brand-50: #eef8fc;
+  --color-brand-100: #d3edf7;
+  --color-brand-200: #a8dcef;
+  --color-brand-300: #74c4e2;
+  --color-brand-400: #3ba6cd;
+  --color-brand-500: #1d88b0;
+  --color-brand-600: #166d92;
+  --color-brand-700: #145878;
+  --color-brand-800: #14495f;
+  --color-brand-900: #123d50;
+
+  /* ── 辅色：青绿（仅用于渐变与少量点缀，不当作主色用）─────────────
+   * 有了第二个色相，品牌渐变才不是「单色深浅」那种廉价感。 */
+  --color-accent-300: #6fd8cb;
+  --color-accent-400: #35c2b0;
+  --color-accent-500: #14a898;
+  --color-accent-600: #0f8a7d;
+  --color-accent-700: #0d6f66;
+
+  /* ── 中性灰阶（略带蓝的冷灰，不是纯灰）──────────────────────────── */
+  --color-ink-50: #f7f9fb;
+  --color-ink-100: #eef2f6;
+  --color-ink-200: #e2e8ef;
+  --color-ink-300: #cfd7e1;
+  --color-ink-400: #9aa5b3;
+  --color-ink-500: #69747f;
+  --color-ink-600: #4e5865;
+  --color-ink-700: #3a434e;
+  --color-ink-800: #242c35;
+  --color-ink-900: #131a21;
+
+  /* ── 语义色 ─────────────────────────────────────────────────────── */
+  --color-danger-500: #d64545;
+  --color-danger-600: #b93636;
+  --color-warn-500: #d08b2c;
+  --color-success-400: #43b380;
+  --color-success-500: #2f9e6e;
+  --color-success-600: #25845b;
+
+  /* ── 状态语义（业务用）──────────────────────────────────────────── */
+  --color-presence-online: #34b37e;
+  --color-presence-offline: #9aa5b3;
+  --color-system-msg: #8a949f;
+  --color-receipt: #8a949f;
+  --color-typing: #8a949f;
+}
+
+/* ============================================================================
+ * ② 与主题无关的度量令牌
+ * ========================================================================== */
+:root {
+  /* ── 字体 ───────────────────────────────────────────────────────
+   * --font-sans 同时被 body 与组件继承，改这里即全站换字。 */
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+
+  /* ── 字号阶（11/12/13/14/16/20/24/30）──────────────────────────── */
+  --text-2xs: 11px; /* 徽标 / 密集元信息 */
+  --text-xs: 12px; /* 辅助说明 */
+  --text-sm: 13px; /* 控件文字 */
+  --text-md: 14px; /* 正文基准 */
+  --text-lg: 16px; /* 段落标题 */
+  --text-xl: 20px; /* 卡片标题 */
+  --text-2xl: 24px; /* 页面标题 */
+  --text-3xl: 30px; /* 展示型数字 */
+
+  /* ── 行高 ──────────────────────────────────────────────────────── */
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.65;
+
+  /* ── 字重 / 字距 ───────────────────────────────────────────────── */
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --tracking-tight: -0.011em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+  --tracking-caps: 0.08em; /* 小号全大写标签，如「用户名」上的浮起标签 */
+
+  /* ── 间距阶（8pt；2/4/6/8/12/16/20/24/32）────────────────────────
+   * 组件里一律用这些变量，不再写 13px、18px 这类随手数值。 */
+  --space-05: 2px;
+  --space-1: 4px;
+  --space-15: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ── 圆角阶（6/10/14/18/999）──────────────────────────────────── */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-full: 999px;
+
+  /* ── 控件尺寸 ──────────────────────────────────────────────────── */
+  --control-h-sm: 30px;
+  --control-h: 38px;
+  --control-h-lg: 46px; /* 认证页主按钮：更大的点击面积 */
+  --control-pad-x: var(--space-4);
+
+  /* ── 动效（≤240ms，克制；不做循环动画干扰阅读）─────────────────── */
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1); /* 出场：快起慢收 */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* 退场：慢起快收 */
+  --ease-both: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.42, 0.64, 1); /* 轻微回弹，仅用于进场 */
+
+  /* ── 层级 ──────────────────────────────────────────────────────── */
+  --z-sticky: 10;
+  --z-overlay: 100;
+  --z-modal: 150;
+  --z-sheet: 160;
+  --z-toast: 200;
+
+  /* ── 品牌渐变（原创：青蓝 → 青绿 45°）──────────────────────────── */
+  --gradient-brand: linear-gradient(135deg, #145878 0%, #1d88b0 46%, #14a898 100%);
+  --gradient-brand-soft: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--color-brand-500) 10%, var(--app-panel)) 0%,
+    color-mix(in srgb, var(--color-accent-500) 8%, var(--app-panel)) 100%
+  );
+
+  /* ── 布局尺寸（保持既有语义，只调数值）──────────────────────────── */
+  --radius-bubble: var(--radius-lg);
+  --radius-avatar: var(--radius-md);
+  --radius-avatar-group: var(--radius-md);
+  /* 60 是 e2e-responsive.mjs:497 的硬断言（1024px 视口 railW 四舍五入必须 =60） */
+  --spacing-rail: 60px;
+  --spacing-sidebar: 288px;
+
+  /* ── 认证页尺寸 ────────────────────────────────────────────────── */
+  --auth-card-max: 900px;
+  --auth-form-max: 344px;
+
+  /* ── 响应式尺寸 ─────────────────────────────────────────────────
+   * 断点数值见 src/composables/useBreakpoint.ts 的 BP 常量。
+   * CSS 媒体查询读不到变量，故数值在样式里重复；边界必须严格互补：
+   *   mobile  <= 767 | tablet 768–1023 | desktop >= 1024
+   * 下面三组是「窄屏生效」的覆盖值，由 main.css 的媒体查询应用。
+   * ------------------------------------------------------------- */
+  --spacing-rail-compact: 52px; /* 平板 */
+  --spacing-sidebar-compact: 248px; /* 平板 */
+  --spacing-mobile-nav: 58px; /* 手机底部导航条高度（不含安全区） */
+  --spacing-touch-target: 44px; /* 触控热区最小边长 */
+  --font-input-mobile: 16px; /* iOS 聚焦不放大页面的下限 */
+
+  /* 安全区。env() 在无刘海设备上求值为 0，可放心直接使用。 */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* ── 焦点环（可复用，避免各组件各写一套 outline）────────────────── */
+  --ring-width: 3px;
+  --focus-ring: 0 0 0 var(--ring-width)
+    color-mix(in srgb, var(--color-brand-400) 38%, transparent);
+  --focus-ring-danger: 0 0 0 var(--ring-width)
+    color-mix(in srgb, var(--color-danger-500) 32%, transparent);
+}
+
+/* ============================================================================
+ * ③ 亮色主题
+ * ----------------------------------------------------------------------------
+ * 面（surface）分三层，从深到浅：canvas（消息区工作台）< bg（页面）
+ * < panel-alt（列表/侧栏）< panel（卡片）。层级靠明度差 + 边框 + 阴影，
+ * 不靠重色块，这样深色主题才能同构地重配平。
+ * ========================================================================== */
+:root {
+  --app-bg: #f2f5f9;
+  --app-panel: #ffffff;
+  --app-panel-alt: #f8fafc;
+  --app-panel-raised: #ffffff;
+  --app-border: #e3e9f0;
+  --app-border-strong: #cfd8e2;
+  --app-text: #131a21;
+  --app-text-muted: #5b6675;
+  --app-text-faint: #8a949f;
+  --app-hover: #eef2f7;
+  --app-active: #e2e9f1;
+
+  /* 品牌着色的浅底（选中态 / 徽标底 / 输入框 focus 底） */
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 12%, #ffffff);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-500) 20%, #ffffff);
+
+  /* 消息气泡：自己 / 对方。原创配色，非任何产品的绿色。 */
+  --bubble-self-bg: var(--color-brand-500);
+  --bubble-self-text: #ffffff;
+  --bubble-peer-bg: #ffffff;
+  --bubble-peer-text: var(--color-ink-900);
+
+  /* 消息工作台的画布：极淡的双色渐变，让大面积空白不至于「一片死板」 */
+  --chat-canvas: #eef2f7;
+  --chat-canvas-image:
+    radial-gradient(
+      120% 90% at 8% 0%,
+      color-mix(in srgb, var(--color-brand-400) 9%, transparent) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      110% 80% at 100% 100%,
+      color-mix(in srgb, var(--color-accent-400) 8%, transparent) 0%,
+      transparent 55%
+    );
+
+  /* 页面底纹：给空态/认证页用的两团柔光，纯 CSS，无图片资源 */
+  --app-ambient: radial-gradient(
+      60% 55% at 18% 12%,
+      color-mix(in srgb, var(--color-brand-400) 14%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      55% 50% at 88% 88%,
+      color-mix(in srgb, var(--color-accent-500) 12%, transparent) 0%,
+      transparent 70%
+    );
+
+  /* ── 阴影三级 ────────────────────────────────────────────────────
+   * 亮色：低透明度的冷黑，短距离；深色靠 --shadow-color 反相。 */
+  --shadow-color: 19 30 45;
+  --shadow-1: 0 1px 2px rgb(var(--shadow-color) / 0.06), 0 1px 1px rgb(var(--shadow-color) / 0.04);
+  --shadow-2: 0 2px 6px rgb(var(--shadow-color) / 0.07), 0 6px 16px rgb(var(--shadow-color) / 0.06);
+  --shadow-3: 0 12px 32px rgb(var(--shadow-color) / 0.14), 0 2px 8px rgb(var(--shadow-color) / 0.08);
+  /* 品牌色投影：只给主按钮/品牌卡用，别到处撒 */
+  --shadow-brand: 0 6px 18px rgb(29 136 176 / 0.28);
+
+  /* 兼容别名：既有组件里引用的 --shadow-panel / --shadow-pop 继续有效 */
+  --shadow-panel: var(--shadow-1);
+  --shadow-pop: var(--shadow-3);
+}
+
+/* ============================================================================
+ * ④ 深色主题
+ * ----------------------------------------------------------------------------
+ * 不是把亮色取反：深色下的「抬起」不能靠更亮太多，否则刺眼；这里让面
+ * 逐层提亮 4–6 个明度点，配合更重的黑色投影与更亮的品牌色（400 而非 500），
+ * 保证主色在深底上对比度足够。
+ * ========================================================================== */
+:root[data-theme='dark'] {
+  --app-bg: #0b0f14;
+  --app-panel: #131820;
+  --app-panel-alt: #171d26;
+  --app-panel-raised: #1b222c;
+  --app-border: #242c38;
+  --app-border-strong: #333d4c;
+  --app-text: #e8edf4;
+  --app-text-muted: #9aa6b5;
+  --app-text-faint: #6b7889;
+  --app-hover: #1e252f;
+  --app-active: #26303c;
+
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 16%, #131820);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-400) 26%, #131820);
+
+  --bubble-self-bg: var(--color-brand-600);
+  --bubble-self-text: #ffffff;
+  --bubble-peer-bg: #212a35;
+  --bubble-peer-text: #e8edf4;
+
+  --chat-canvas: #0e131a;
+  --chat-canvas-image:
+    radial-gradient(
+      120% 90% at 10% 0%,
+      color-mix(in srgb, var(--color-brand-500) 16%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      110% 80% at 100% 100%,
+      color-mix(in srgb, var(--color-accent-600) 14%, transparent) 0%,
+      transparent 58%
+    );
+
+  --app-ambient: radial-gradient(
+      60% 55% at 16% 10%,
+      color-mix(in srgb, var(--color-brand-500) 22%, transparent) 0%,
+      transparent 72%
+    ),
+    radial-gradient(
+      55% 50% at 90% 92%,
+      color-mix(in srgb, var(--color-accent-600) 18%, transparent) 0%,
+      transparent 72%
+    );
+
+  /* 深色投影用纯黑 + 更高不透明度，才压得住亮面 */
+  --shadow-color: 0 0 0;
+  --shadow-1: 0 1px 2px rgb(var(--shadow-color) / 0.4), 0 1px 1px rgb(var(--shadow-color) / 0.3);
+  --shadow-2: 0 2px 8px rgb(var(--shadow-color) / 0.45), 0 8px 20px rgb(var(--shadow-color) / 0.35);
+  --shadow-3: 0 16px 40px rgb(var(--shadow-color) / 0.6), 0 4px 12px rgb(var(--shadow-color) / 0.4);
+  --shadow-brand: 0 6px 20px rgb(29 136 176 / 0.36);
+
+  --shadow-panel: var(--shadow-1);
+  --shadow-pop: var(--shadow-3);
+}

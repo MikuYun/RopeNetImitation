@@ -1,0 +1,274 @@
+@import 'tailwindcss';
+@import './theme.css';
+
+/* Tailwind v4：把运行时主题变量暴露为工具类可用的 token。
+   data-theme 在 <html> 上切换，故需 dark 变体跟随 data-theme 而非 media。 */
+@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body,
+  #app {
+    height: 100%;
+    margin: 0;
+  }
+
+  /* ── 移动视口高度 ────────────────────────────────────────────────
+   * 【为什么不用 100vh】iOS Safari 的 100vh 包含被地址栏/工具栏遮住的部分，
+   * 用它会让底部输入框被顶到屏幕外。dvh 跟随动态视口，键盘弹出与地址栏
+   * 伸缩时自动收缩。先写 vh 作回退，再写 dvh 覆盖（不支持的浏览器保留 vh）。
+   *
+   * 【为什么不再叠加 VisualViewport 补偿】dvh 已经在跟随键盘；再按
+   * visualViewport.height 扣一次就是双重扣减，反而把输入框挤出可视区。
+   * 只有实测发现 dvh 未跟随键盘时才引入，且必须成对清理监听。
+   * ------------------------------------------------------------- */
+  html,
+  body,
+  #app {
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  /* 根节点不滚动：只允许列表区/消息区各自滚动，避免「页面上下双重滚动」 */
+  html,
+  body {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  /* ── 主题切换的过渡 ──────────────────────────────────────────────
+   * 只在「换主题」这一瞬间给 body 和常用面板加 180ms 的颜色过渡，避免
+   * 一亮一暗的硬切。不给 * 加 transition（会拖慢列表滚动并让 hover 变粘）。 */
+  html[data-theme-anim] body {
+    transition:
+      background-color var(--dur) var(--ease-both),
+      color var(--dur) var(--ease-both);
+  }
+
+  body {
+    background: var(--app-bg);
+    color: var(--app-text);
+    font-family: var(--font-sans);
+    font-size: var(--text-md);
+    line-height: var(--lh-normal);
+    letter-spacing: var(--tracking-tight);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    /* 移动端点击高亮块会破坏原创视觉 */
+    -webkit-tap-highlight-color: transparent;
+    /* 文本选中色跟着品牌走，不用系统蓝 */
+    accent-color: var(--color-brand-500);
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--color-brand-400) 30%, transparent);
+    color: inherit;
+  }
+
+  /* 标题统一字距，避免中文标题在高字重下显得松散 */
+  h1,
+  h2,
+  h3,
+  h4 {
+    letter-spacing: var(--tracking-tight);
+  }
+
+  /* 移动端滚动：惯性滚动 + 不把滚动传递给父级（防止滚到底后页面跟着弹） */
+  [data-scroll] {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+  }
+
+  /* 极简滚动条：默认灰轨会破坏原创视觉。thumb 半透明，hover 才加深。 */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: color-mix(in srgb, var(--app-text-faint) 38%, transparent);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: var(--radius-full);
+    transition: background-color var(--dur) var(--ease-both);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: color-mix(in srgb, var(--app-text-faint) 68%, transparent);
+    background-clip: padding-box;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  /* Firefox 的滚动条也收敛成细条 */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, var(--app-text-faint) 40%, transparent) transparent;
+  }
+
+  /* ── 焦点可见性 ──────────────────────────────────────────────────
+   * 全局兜底环；组件内部用更精细的 --focus-ring 覆盖。:focus-visible
+   * 保证鼠标点击不出现环，键盘操作一定出现 —— 这是可访问性硬要求。 */
+  :focus-visible {
+    outline: 2px solid var(--color-brand-400);
+    outline-offset: 2px;
+  }
+  /* 弹层/抽屉容器是程序聚焦的，不要给它描环（其内部元素另有环） */
+  [tabindex='-1']:focus {
+    outline: none;
+  }
+
+  /* 数字用等宽字形，消息时间/未读数不会跳动 */
+  time,
+  [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 图片默认不吃宽高比走形 */
+  img {
+    max-width: 100%;
+  }
+}
+
+@layer utilities {
+  /* 主题语义工具类 —— 让组件里不出现裸 hex */
+  .bg-app {
+    background-color: var(--app-bg);
+  }
+  .bg-panel {
+    background-color: var(--app-panel);
+  }
+  .bg-panel-alt {
+    background-color: var(--app-panel-alt);
+  }
+  .bg-canvas {
+    background-color: var(--chat-canvas);
+  }
+  .bg-hover {
+    background-color: var(--app-hover);
+  }
+  .bg-active {
+    background-color: var(--app-active);
+  }
+  .border-app {
+    border-color: var(--app-border);
+  }
+  .text-app {
+    color: var(--app-text);
+  }
+  .text-muted {
+    color: var(--app-text-muted);
+  }
+  .text-faint {
+    color: var(--app-text-faint);
+  }
+  .shadow-panel {
+    box-shadow: var(--shadow-panel);
+  }
+  .shadow-pop {
+    box-shadow: var(--shadow-pop);
+  }
+
+  /* 触控热区：用 padding 把可点区域撑到 44x44，图标本身不必 44（任务书 R3）。 */
+  .touch-target {
+    min-width: var(--spacing-touch-target);
+    min-height: var(--spacing-touch-target);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  /* 安全区补白。只在有刘海的设备上产生非零值。 */
+  .pad-safe-top {
+    padding-top: var(--safe-top);
+  }
+  .pad-safe-bottom {
+    padding-bottom: var(--safe-bottom);
+  }
+  .pad-safe-x {
+    padding-left: var(--safe-left);
+    padding-right: var(--safe-right);
+  }
+
+  /* 屏幕阅读器专用：视觉隐藏但保留语义（用于给纯图标按钮补名字） */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
+  }
+}
+
+/* ============================================================================
+ * 响应式骨架
+ * ----------------------------------------------------------------------------
+ * 断点见 src/composables/useBreakpoint.ts 的 BP。边界严格互补：
+ *   mobile  <= 767px | tablet 768–1023px | desktop >= 1024px
+ * 这里只放跨组件共享的骨架规则；组件自身的响应式写在各自 <style> 里。
+ * ========================================================================== */
+
+/* ── tablet：紧凑多栏 ─────────────────────────────────────────────── */
+@media (min-width: 768px) and (max-width: 1023px) {
+  :root {
+    --spacing-rail: var(--spacing-rail-compact);
+    --spacing-sidebar: var(--spacing-sidebar-compact);
+  }
+}
+
+/* ── mobile：单栏全屏 ─────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  /* 竖侧栏在手机上不渲染（组件层用 v-if，这里再兜一层防误显示） */
+  .shell__rail {
+    display: none;
+  }
+
+  /* 手机上列表/正文互斥：由路由决定谁出现，见 ChatView.vue */
+  .shell {
+    flex-direction: column;
+  }
+
+  /* iOS 上小于 16px 的输入框聚焦会自动放大整页，这里给下限。
+     用 --font-input-mobile 而不是写死 16px，便于集中调整。 */
+  input,
+  textarea,
+  select {
+    font-size: max(1em, var(--font-input-mobile));
+  }
+}
+
+/* ============================================================================
+ * 动效降级
+ * ----------------------------------------------------------------------------
+ * 系统开了「减少动态效果」就只保留「出现/消失」这种必要的状态变化，
+ * 位移、缩放、回弹、循环 shimmer 全部退化为「直接显示」或「仅透明度」。
+ * 这是硬要求：前庭功能障碍用户会被位移类动画致晕。
+ * ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: 1ms;
+    --dur: 1ms;
+    --dur-slow: 1ms;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

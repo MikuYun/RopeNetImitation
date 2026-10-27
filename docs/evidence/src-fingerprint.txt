@@ -1,0 +1,130 @@
+# src-fingerprint.txt —— 源码指纹清单（由 scripts/fp.mjs 的算法生成）
+# 算法：递归收集文件（跳过 node_modules/dist/.data/evidence/backups）→ 路径排序
+#       → 每文件 sha256 → 把「每文件 hex + 相对路径」依次喂进 sha256 得到聚合值
+# 排除：node_modules / dist / .data / evidence / backups，以及工具链临时锁 .dsh-ops-update-*.lock
+#       （锁文件是写文件时的 0 字节副作用、写完即删；若算进指纹会让同一份源码得到不同的
+#        聚合值，属假漂移，故 scripts/fp.mjs 已显式跳过。见该脚本内注释。）
+# 采样时间：2026-10-23T13:52:00+08:00（手机端工具栏修复后；上一版 11:05:27 对应 task-12 P0 50/50）
+# 本次增量：ComposerToolbar.vue —— 手机段 `.cbar__group{display:none}` 会连带隐藏右侧
+#   附件组（同带该 class），导致 767px 以下没有「发送图片/发送文件」；已改为
+#   `:not(.cbar__group--end)` 并给附件组显式 display:flex。回归 docs/evidence/run-cbar-mobile.ps1（34/34）。
+
+# ─────── frontend/src（93 文件，UX2：含 utils/dialogA11y.ts / stores/pins.ts / views/ProfileView.vue / views/AdminView.vue 等新增）───────
+73a6b9ecc910ce2fe227844add40fa566ad2684f540c06ac611346bc4ee84288  frontend/src/App.vue
+37eeb2cb2a8b510e6071c444c624204ae53780afdff9b08cafcad01cb70e145f  frontend/src/api/admin.ts
+fdbc8ea5d838fe61e8f705dd29926a9beb0bc960f7e31e0e3415f26c77721007  frontend/src/api/auth.ts
+3a493837d2d44548f1b400a638a678d8e02c1266af0ab2dddca54430f192a29b  frontend/src/api/auth.types.ts
+cb95dcf031aeb8bff0986cfd0fec36e1bfe984f640076c613033cddaf356a43a  frontend/src/api/conversations.ts
+309b66fb3351d64824a474d6688c70754a526411bafd1faa197ea3d9abc756da  frontend/src/api/friends.ts
+fbf9c93c1a9d5a37f53d967107b4e5ff22cf5535c8530d1e801147d146f32c76  frontend/src/api/http.test.ts
+5ebfc11fbd4f2e52df58488098f3b55ca2b32100d3749db258dda06dd2c90d31  frontend/src/api/http.ts
+40c2fc01249f492e65dd48519375053e63d9220981746470ef44765e648e7d99  frontend/src/api/messages.ts
+b2b4a72a0b1a0831449d463a91267d35421409d536567814bcc615960e74efe5  frontend/src/api/normalize.test.ts
+3d807f774bbc5cf5a16aa51a50f7d046a80770419416f787a2344aa3e13d6e66  frontend/src/api/normalize.ts
+fc8f9c8a05ff258d3fc2d7655057f9cba87aafda3488571abc993a614f53b766  frontend/src/api/pins.ts
+ad659133f7e04ff762257158e33b9f81a64f851677854f07d41d8bc65c43ae24  frontend/src/api/presence.ts
+c6b83b77dcb0f6ed2ad69f13cdbcf7e5c77c749fdb827063d8069996127e6ae0  frontend/src/api/uploads.ts
+cea4d63d0349929231f5cfb81f16f52e997b28a91d6c94d883c70eeedecf78c4  frontend/src/api/users.ts
+a8e6571f1c67dc0a7beb8475baad902aeca1363422accf3a15388505f3efaa17  frontend/src/api/wire.ts
+adae1b4c15c901e5a31c7a75c6b4f40baa5c798f67ab68ae66f417313c0ca1b2  frontend/src/components/base/AppAvatar.vue
+7b348f9ff2d4302e08eedd28b5d0d08db498abc0462fbfff76f4d7bddbb2db56  frontend/src/components/base/AppButton.vue
+0932f9ad340a9ffe54b0b0078455115df86e4e634b6b30b8bd4a7ad6816e0799  frontend/src/components/base/AppEmpty.vue
+e16645f3ba28f050fd02f230e99a9cd306621e941c76611270e038def52a32cc  frontend/src/components/base/AppIcon.vue
+f6638f8aab1974f8e8539c5daa3db8ebb7f706600fd71a3d23a30dd2d1c193f9  frontend/src/components/base/AppInput.vue
+7895dfd8a9ac5723a4672780dfa6efd02aab55d153e75dd08b69f5c4c07ebfd8  frontend/src/components/base/AppModal.vue
+cfa923b5188db813c15c5b3570aea0bcedc015e4bc2acbad355920c704b0e834  frontend/src/components/base/AppSkeleton.vue
+e6ed1881d05083901f937f91aca5dae2ea6008ead40458d3ded7dbcd851644d2  frontend/src/components/base/AppToaster.vue
+2b752907eeb213403ef3402aa55fed929a0e4bacc411c7de36612b92860ae387  frontend/src/components/base/AuthShell.vue
+5d1c56e0ca93331a3ccf016bdd5d3a181f22d251bc329fd709e9703f8a48f9b5  frontend/src/components/group/GroupCreateModal.vue
+1f1f3b64798e750fd6c905c5ea2bf7e3959c3c6a9ba2332d5daa993d4b047972  frontend/src/components/layout/AppRail.vue
+62f0a5bf2a9db9340cdd76240e1b6d65866cc693fc7ebb775b41b3678d35e416  frontend/src/components/layout/ContactPanel.vue
+22f42f09be518229f70c29742be0fe5818d21149be735e34c3b631a383827633  frontend/src/components/layout/ConversationItem.vue
+999172183a938be48a58bffaacc9bfcd521668b9ac91bec940e41f37216d03d3  frontend/src/components/layout/ConversationList.vue
+088715a78d38c314bad0705d04ca5ea5cd0f34a4af011d84f493778265543170  frontend/src/components/layout/MobileNav.vue
+c0bf9c7c3caa2bb9dfad7442d19fc83279e66de73eadee85339dfa820529a73a  frontend/src/components/layout/PresenceDot.vue
+3afd96a188545dc417d8dc171bbce91a8fa60deb7323508b53592f00ea7995a6  frontend/src/components/message/AttachmentView.vue
+8d84fd2af99ad1e4872343db5c030cfd7248cfdb6ba6c3501687d2d75bb2da32  frontend/src/components/message/ComposerToolbar.vue
+1ffac1d916145df6556862d828d74715f0882c541e7308b633078eff08583e1f  frontend/src/components/message/DateDivider.vue
+8552eb1b3170cc94c774136c981d71247f365cb7aef01b9aa44e4c847ce50ccd  frontend/src/components/message/MarkdownNodes.ts
+b3cd2e5850a123500a1738f18433fc4a9fdd68337b6a915c3e05e15c0d2cf114  frontend/src/components/message/MarkdownView.vue
+631002683bdfce4ff630cba80f2083cbd57d479e6727898eba525514ef5c7825  frontend/src/components/message/MessageBubble.vue
+09d215851418734b8ec50e753f42d736edcb242ebaa0cf15b379b7461bf5ccbe  frontend/src/components/message/MessageComposer.vue
+98cf700e670c7631b597256ed2d8066112abc1138c3aed89b5719057bd91dc69  frontend/src/components/message/MessageStatusIcon.vue
+8b63f57dff1d0cfa96e7ba6835cb0b058c46b95be22d905d892dd3087aacfb99  frontend/src/components/message/TypingIndicator.vue
+294914d73ed9f9764188ad50f42a7e1b37664a66d383115894cf7a9949fa8ff4  frontend/src/components/message/composer.ts
+23daa7cb458635deae4e883f94383f1c9a286a29b34dcd1c548ad37363a90a29  frontend/src/components/message/markdownEditing.test.ts
+aa89edbdd3da59a38b965372b54263ab7ab9b44d107ce36648fd5bb5f18a8550  frontend/src/components/message/markdownEditing.ts
+a61528c9ffb3e309438901bc154d8932a2f84d2b4e58327eb8800e435cca837b  frontend/src/components/message/messageMenu.test.ts
+713a7e2c3770192554171ec192f44268806a05278602d31a91ced14bf0f712cc  frontend/src/components/message/messageMenu.ts
+003a8b9bbc094d5ab875d2102eb158d38e68daef208cdef8473ddbf3506a632c  frontend/src/composables/useBackNavigation.ts
+1ed28f9853b4861ed07ea1a1f31e45ae0d6c0a6863da5db9f51b90e93db55b91  frontend/src/composables/useBreakpoint.ts
+36db888403757445782470676287981c1cc0b8439baf055098f2b4102ce61d21  frontend/src/env.d.ts
+154321d02d7eb76c70f7e94fabfa5c25ef7c219b7126a3778572170e30b1b4f7  frontend/src/main.ts
+bbc2cfa4bb460faeb04251bd9a3aea355d16cee72b428b7eb8ea8b719fb35351  frontend/src/router/index.ts
+45d8eb61b4aa93eac5086fe2b6e862a3647d6910e9679977325388949e7b4f7c  frontend/src/stores/admin.test.ts
+9d43a3aeea763edd23bc4384f5137a03520ce1bc63287927a48e389c2f766696  frontend/src/stores/admin.ts
+ac52e444fc69f9c2b92f2531b345f3a11185bcf2990bb2344383dcf9c5d86962  frontend/src/stores/auth.ts
+259b9825ebaa57203413ededa3f71a7f9ae594710a02a52641b346c0bdc5201f  frontend/src/stores/conversation.test.ts
+61d31a6b768a91f8f9d1d82161533006f36c8b6a6b7af1bed173c17d6df559f9  frontend/src/stores/conversation.ts
+81a60523051182e4c965e0f565232028cd1edc7b1c3c4325c5d6c428303d199a  frontend/src/stores/friend.ts
+5e02730338194c79c496bf1e65b9df0f520bcacca196f715cbc92b8c94be1a55  frontend/src/stores/message.test.ts
+8e7e0701e9e98fbf8461448d0c38807292ebf376e60e02196a51569c8ea3ce56  frontend/src/stores/message.ts
+13bd58444f602f5211ab40777628092c61967731dc4e3623f25620e314bc5bf9  frontend/src/stores/pins.test.ts
+95efc1c4c1182fd36d839c542160e3d4e50000afefce547d598c41fb71e70f3e  frontend/src/stores/pins.ts
+4cab6ad33ec3729840d93225ffd4e12cff191aff0c007ea849b9a39d3c819b9a  frontend/src/stores/presence.ts
+c204c95dfef3c949982a114ba9a5d6e6282be2dc63de8d1b0eaa66032d2471ab  frontend/src/stores/session.ts
+f2b4c90076005b68a7f6436c732abed15e7c02b780946966f6ae3e275fe66f04  frontend/src/stores/ui.ts
+6fea86208275b5106524bb9b41b1fe79c6126d526c9797a281f99c144d89ec1a  frontend/src/styles/main.css
+08e25f73a22dbab82db27dc7c4f3d706302f51ba74f4a6028216aabca008cd60  frontend/src/styles/theme.css
+0c9d24f180e37a92486ea70008666dd822e199ba31358002d4a05e5777e3953b  frontend/src/types/domain.ts
+cff60c53095fcce72e91c3f47e7736e46e7c434bcc31ae9d1c1308b0cc7c94c3  frontend/src/utils/attachments.test.ts
+662eea9b562da5e19c0ce501460a2674c9b3dad8cd47d2c42d5ea99fce0a4355  frontend/src/utils/attachments.ts
+25a6940e8097beac7a9fe9d5baf2393aac334f9610ded9c6b623a120bdebcec2  frontend/src/utils/datetime.ts
+bec5481a5b9086971ae7872c4413969e23397d52320207d351358e825ce5d4ff  frontend/src/utils/dialogA11y.test.ts
+925fe0c2adfd36458b27a88a19bf2d37d1cfb17090bcd635aaba922d08cf5e94  frontend/src/utils/dialogA11y.ts
+5245cdbdf224472e7e523ef62fd9d0ead931224ba5c4e382a55224f699712f7b  frontend/src/utils/markdown.test.ts
+6efb35a6c1ab85f5685c47d2ddc90f681d06592603f0ed2f1a746fda1469e6d4  frontend/src/utils/markdown.ts
+e1749d29adc3d1ca8bbe37d45d5b79c79b4c88939c79c2db95bdb5e783756a98  frontend/src/utils/uuid.ts
+694721d357c7bf966339de7c1a98644550db8871660da7f11d7e68880d20a8f8  frontend/src/views/AdminView.vue
+362e9379578a33dfe7b16bfb5a0e359c40ba1b0a0c5800809f51e03f6b47a3b0  frontend/src/views/ChatEmptyView.vue
+ded676bfcf5d4459a57a7e5e87f909393c46d962428bd6c843aca97f8286a05c  frontend/src/views/ChatView.vue
+0f6c2b313516b761bbeb8598b5c15d51738bb8c696005bf25b0e36eec7eedd11  frontend/src/views/ConversationInfoView.vue
+e4694a0b62c0f1fde7390856dcdcbfa439336b7cf9c227276050e810505ebdd8  frontend/src/views/LoginView.vue
+c2690574054f415d5f29a2318591f260d687a5d1c0b8f13cfa2d14f7e39f49d7  frontend/src/views/MessagePane.vue
+94df92790053d8a7b5555ca4fabf2549c7ef24f172d3f7f0313ceacedb9d392b  frontend/src/views/NewFriendView.vue
+5ecdc63028e1ac097c871783b786a6f9625bd4b9e8277f41220d1197e765ba49  frontend/src/views/NotFoundView.vue
+01b58f8c250603bfc75764142d46e6c135170e3d7d45e403f432fb6e75e1f044  frontend/src/views/ProfileView.vue
+e47c378b8fa4899ecdf592004d9941c320997d065a826c92a15c9854d36ed798  frontend/src/views/RegisterView.vue
+3f9c26f9b15e55b4df808d38eb3adf6f2c8d0ec2d5c706f1647d7116a04406a6  frontend/src/ws/client.test.ts
+278c9ac73e7dbc1d8408eac761ba39b2a58e91aab175f3d7ef697392a8d02ced  frontend/src/ws/client.ts
+7d6a413428912723929e6b6d792b139dbec29dc7d46dd7cd0aa9d3851c0270a5  frontend/src/ws/constants.ts
+6a0e624375968f784623b080216bfbf10ec7dad5049e254465a2075f541d2833  frontend/src/ws/handlers.ts
+2a070b2724a718d5260ba70686e0eb0fc3e56e176328f82914284b04b53c5006  frontend/src/ws/schema.eval-probe.test.ts
+1c36bbb7631fc0badd70f017b2ff16634b2ff209291ce5d4404c7726946ce43e  frontend/src/ws/schema.test.ts
+e86ed767aa7abd75bcfa28e2b405451a30456b6b94ff60d294103699281dc17a  frontend/src/ws/schema.ts
+b157e0cd5bc9735dbbc0dc318c08e1e81ba4ddb0c71bc3df42ac1d451c88a13a  frontend/src/ws/ticket.ts
+
+# ─────── backend/src（12 文件，UX2：DB v3 / uid / 群角色 / 置顶 / 附件权限修复）───────
+f912ea970ed1221845632039f4033883e07a5b9b51c8b6ec5415c050b4a2f488  backend/src/app.ts
+b8e57de1b5fa98aaf37fdd68505aae714ff8bbedd8a4a3bc85a9db83dbc9ff58  backend/src/bootstrap.ts
+477b114058f30f99b0c66afd88a1f48cf3e7f098636450fc6f3f68621b332e1c  backend/src/config.ts
+ef4706f4cf1b307c5321bd32edbe7b944e9fb0c35a665034065d6af1c36f999f  backend/src/db.ts
+1561acf8a992c3fe58da544a056c765e34cf42b5c9d3056d372824e87b97603b  backend/src/errors.ts
+7481bea0b935b47b28ef30117a6b682e8a26094a91c7ce5ac22fe371f00b7d4b  backend/src/realtime.ts
+f8285170e5ec729592e19ba4277b49583977d73c48055c80e894886055fdf2ba  backend/src/routes.ts
+b4ae0a4addd1c7363bea8e2751b960e66a0e6b0368c8a1c530756d37a8cb8ff8  backend/src/schemas.ts
+bc2355377d4c496ae88092f9c7e716dcfcfca409a17a515b75f0a60c21a27c7a  backend/src/security.ts
+4a84a95fac467a9d455f30a686ffe59598eaa78f50e50e73062fd5749f6974bc  backend/src/server.ts
+79d5f9672ac279ea3acdce58b3c7b3007fd5b4da0af99536adf20900739acddf  backend/src/service.ts
+2e9305a3b6472dcb16a1e5689df89f45a6c6cb2c20dc81e74c15dc64e5288e79  backend/src/upload.ts
+
+# ─────── contracts（4 文件）───────
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  contracts/.gitkeep
+03e8fac0904495b83b2762e8a739412afdeaed7ce1c436adb3a89fd9773e3962  contracts/requirements/errors.json
+b78ef8412faf74f0a3a278d747ed92903bd64476ca549b27ce057cc3fe4d4ec4  contracts/requirements/rest-requirements.json
+abe482130cf9e92068c810a5c14f1f95cd46344a70fe030aa345670673eef752  contracts/requirements/ws-requirements.json
+
+# ─────── 聚合值（scripts/fp.mjs 输出）───────
+frontend/src files=93 aggregate=9d7777f5258dd89b1224eb382eecc6e4c166e4027608c2d8267be4ab270a5b0b
+backend/src files=12 aggregate=2a663aadcb57ab637bf9fbf4ae2ec8fc9da38650a724463032ececbe5bd1be49
+contracts files=4 aggregate=ad54a46e1d6e7d11acd2036b8ee543479e4075cea9b542a96a21be63f96e2810

@@ -1,0 +1,125 @@
+
+=== FE 浏览器矩阵  BASE=http://localhost:5174  BACKEND=http://127.0.0.1:3098 ===
+
+会话：AB=8a2f8998-5c8c-43dd-9113-f974275c6339  AC=a34ed613-089f-4330-b7fc-f26e5e3fe75c
+
+
+──── FE-01 已读门禁（联系人屏 / 详情页 / 深链 / 后台标签页真验） ────
+PASS  前置：B 发送成功（联系人屏场景）  —— seq=5
+PASS  停在联系人屏时未读保留（服务端未清零）  —— unreadCount=1
+PASS  前置：B 发送成功（详情页场景）  —— seq=6
+PASS  停在会话详情页时未读保留  —— unreadCount=1
+PASS  前置：B 发送成功（深链场景）  —— seq=7
+PASS  深链 /chat/:convId 冷启动直接渲染正文  —— bubble=7
+PASS  深链进入正文后未读消除（服务端 0）  —— unreadCount=0
+PASS  前置：已把页面 visibilityState 切到 hidden  —— {"state":"hidden","hidden":true}
+PASS  前置：B 发送成功（后台场景）  —— seq=8
+PASS  后台标签页(hidden)收到消息未被自动已读  —— unreadCount=1
+PASS  前置：恢复 visibilityState=visible  —— {"state":"visible","hidden":false}
+PASS  回到前台后补上已读  —— unreadCount=0
+PASS  前置：B 发送成功（离开正文场景）  —— seq=9
+PASS  离开正文后新消息重新计未读  —— unreadCount=1
+PASS  离开正文后列表红点出现  —— badge="1"
+
+──── FE-02 已读失败回滚（429 / 断网 / 并发反例） ────
+PASS  前置：429 场景列表有未读  —— badge="1"
+PASS  已读 429 后服务端仍未读（未伪装成功）  —— unreadCount=1
+PASS  已读 429 后红点回滚（UI 与服务端一致）  —— 失败前="1" 失败后="1"
+PASS  已读上报断网后服务端仍未读  —— unreadCount=1
+PASS  已读上报断网后红点回滚  —— badge="1"
+PASS  并发反例：旧失败响应未回滚已成功的新游标（服务端仍已读）  —— read 请求数=2 unreadCount=0 bubble=12
+PASS  并发反例：确实发生了两发以上已读请求（前置成立）  —— read 请求数=2
+PASS  拦截移除后重试成功、权威状态已读  —— unreadCount=0
+
+──── FE-03 幂等 / 排序置顶 ────
+PASS  幂等：同 clientMsgId 重发返回 200（非 201）  —— status=200
+PASS  幂等：重发返回同一 seq  —— 首次 seq=1 重发 seq=1
+PASS  幂等：历史里只有一条（未产生重复）  —— 同 clientMsgId 条数=1
+PASS  后端排序：最新消息的会话排第一  —— first=8a2f8998-5c8c-43dd-9113-f974275c6339（期望 AB=8a2f8998-5c8c-43dd-9113-f974275c6339）
+PASS  前端列表排序：最新会话在首位  —— 首位标题="闸门 B"
+
+──── FE-03 分页：滚动加载历史不乱序不重复 ────
+PASS  前置：分页测试消息全部发出  —— sent=25 failedAt=-1
+PASS  分页：首屏只加载一页（<=30 条）  —— 首屏条数=25
+PASS  分页：加载到全部 25 条  —— 条数=25 滚动轮次=0
+PASS  分页：无重复消息  —— 总条数=25 去重后=25
+PASS  分页：DOM 顺序按 seq 升序（不乱序）  —— 首=1 尾=25
+PASS  深链刷新后正文仍渲染（历史未丢）  —— bubble=30
+
+──── FE-03 群权限：非群主改名/踢人 403 且 UI 不渲染管理入口 ────
+PASS  前置：群聊创建成功（a 为群主）  —— status=201 id=a95d9770-cc56-4fdc-8db5-d86906b24dff
+PASS  非群主改名被拒（403 OWNER_REQUIRED）  —— status=403 code=OWNER_REQUIRED
+PASS  非群主踢人被拒（403 OWNER_REQUIRED）  —— status=403 code=OWNER_REQUIRED
+PASS  UI：普通成员看不到「修改群名」按钮  —— .info__edit 数量=0
+PASS  UI：群主看得到「修改群名」按钮  —— .info__edit 数量=1
+PASS  UI：群主看得到移除成员入口  —— .member__remove 数量=2
+PASS  群主改名成功（200）  —— status=200
+
+──── FE-03 草稿 / Enter 语义 ────
+PASS  草稿：切换到另一个会话不串内容  —— 另一会话输入框=""
+PASS  草稿：切回原会话后草稿仍在  —— 输入框="草稿保留测试：不应丢失"
+PASS  手机视口 Enter 换行、不发送  —— 值="手机 Enter 应换行\n" bubble 0→0
+PASS  手机视口点发送键能发出  —— bubble=1
+   … gate_a 触发限流，等窗口滑过()…
+   … gate_a 限流已解除（等了 10s）
+PASS  桌面 Enter 键发送消息  —— bubble 前=30 后=31 输入框=""
+PASS  桌面 Shift+Enter 换行且不发送  —— 值="第一行\n" bubble 31→31
+
+──── FE-03 视口 × 深色主题：无横向溢出 ────
+PASS  深色 320x568 正文冷启动渲染成功
+PASS  深色 320x568 主题已应用  —— data-theme="dark"
+PASS  深色 320x568 无横向溢出  —— doc=320 body=320 view=320 429数=0
+PASS  深色 390x844 正文冷启动渲染成功
+PASS  深色 390x844 主题已应用  —— data-theme="dark"
+PASS  深色 390x844 无横向溢出  —— doc=390 body=390 view=390 429数=0
+PASS  深色 768x1024 正文冷启动渲染成功
+PASS  深色 768x1024 主题已应用  —— data-theme="dark"
+PASS  深色 768x1024 无横向溢出  —— doc=768 body=768 view=768 429数=0
+PASS  深色 1024x768 正文冷启动渲染成功
+PASS  深色 1024x768 主题已应用  —— data-theme="dark"
+PASS  深色 1024x768 无横向溢出  —— doc=1024 body=1024 view=1024 429数=0
+PASS  深色 1440x900 正文冷启动渲染成功
+PASS  深色 1440x900 主题已应用  —— data-theme="dark"
+PASS  深色 1440x900 无横向溢出  —— doc=1440 body=1440 view=1440 429数=0
+
+──── FE-04 失效回退（401 / WS 4003 / refresh 死锁 / 旧 401 隔离 / 离线） ────
+PASS  业务请求 401 后回到登录页  —— url=http://localhost:5174/login?next=/chat/8a2f8998-5c8c-43dd-9113-f974275c6339
+PASS  401 回退带上 next 参数（登录后能回原地）  —— url=http://localhost:5174/login?next=/chat/8a2f8998-5c8c-43dd-9113-f974275c6339
+PASS  401 回退后本地凭据已清理
+PASS  前置：服务端注销会话成功（触发 WS 4003）  —— status=200
+PASS  WS 4003 后给出「登录状态已失效」提示  —— url=http://localhost:5174/chat
+PASS  WS 4003 后回到登录页  —— url=http://localhost:5174/login?next=/chat
+PASS  前置：受保护请求确实撞到了注入的 401（单飞前提）  —— listHits=1 refreshHits=1
+PASS  refresh 自身 401 后终止并回登录页（不死循环）  —— url=http://localhost:5174/login?next=/
+PASS  refresh 自身 401 只发起一次（单飞）  —— refreshHits=1 listHits=1
+PASS  前置：确实发出了被延迟的详情请求  —— delayed=2
+PASS  前置：旧 401 悬空期间完成换账号登录  —— url=http://localhost:5174/chat
+PASS  旧代际 401 落地后仍在新账号（未被踢回登录页）  —— url=http://localhost:5174/chat
+PASS  旧代际 401 不影响当前身份  —— title=闸门 B
+PASS  断网期间不登出（仍在应用内）  —— url=http://localhost:5174/chat/8a2f8998-5c8c-43dd-9113-f974275c6339
+PASS  断网期间本地凭据保留
+PASS  弹层打开时焦点自动进入弹层  —— 焦点=BUTTON/BUTTON index=0/6
+PASS  弹层打开时焦点落在第一个可聚焦元素（非容器兜底）  —— index=0/6 焦点=BUTTON
+PASS  弹层内可聚焦元素 >= 3（Tab 循环前提）  —— count=7 [BUTTON | INPUT | INPUT | 闸闸门 B | 闸闸门 C | 取消 | 创建]
+PASS  弹层 Tab 在最后一个元素处循环回首个  —— 焦点=BUTTON/BUTTON index=0/7
+PASS  弹层 Shift+Tab 在首个元素处循环到末尾  —— 焦点=BUTTON/创建 index=6/7
+PASS  弹层 Esc 可关闭（节点从 DOM 移除）  —— 剩余节点=0 visible=false
+PASS  弹层关闭后焦点归还触发按钮  —— 焦点=BUTTON title=发起群聊
+PASS  弹层二次打开焦点仍自动进入（往返稳定）  —— index=0/6
+PASS  弹层二次关闭焦点仍归还触发按钮  —— title=发起群聊
+PASS  手机「更多」面板可打开
+PASS  手机「更多」面板打开时焦点自动进入面板  —— 焦点=BUTTON/切换到深色主题 index=0/3
+PASS  手机「更多」面板 Tab 在末尾循环回首个（不逃逸）  —— index=0/3 可聚焦=切换到深色主题 | 退出登录 | 取消
+PASS  手机「更多」面板 Shift+Tab 在首个循环到末尾  —— index=2/3
+PASS  手机「更多」面板 Esc 可关闭（节点从 DOM 移除）  —— 元素数=0
+PASS  手机「更多」面板 Esc 关闭后焦点归还「更多」触发件  —— 焦点=BUTTON/更多 是第3个tab=true
+PASS  手机「更多」面板可关闭（取消）
+
+=== 汇总：93 项 —— 通过 93，失败 0，产品缺陷 0，待验 0 ===
+
+截图见 docs/evidence/matrix-*.png
+数据仅写入隔离后端 http://127.0.0.1:3098，未触碰生产。
+DEFECT 是产品行为不符合验收标准（不计入退出码，交由 frontend-core 修）。
+
+
+EXIT=0

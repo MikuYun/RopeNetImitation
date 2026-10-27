@@ -1,0 +1,382 @@
+{
+  "$comment": "aitrance-chat 统一错误码表 v0.3.0。事实源为 backend/openapi.json (info.version 0.2.0) 与 backend/API.md。所有 REST 4xx/5xx 返回 {error:{code,message,traceId}}；前端只按 code 分支，不解析 message。v0.1.0 的 details/traceId 命名与 410/501 码已按后端事实修正。",
+  "version": "0.3.0",
+  "supersedes": "0.2.0",
+  "sourceOfTruth": "backend/openapi.json + backend/API.md",
+  "envelope": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "error"
+    ],
+    "properties": {
+      "error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "code",
+          "message",
+          "traceId"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "机器可读；前端唯一分支依据"
+          },
+          "message": {
+            "type": "string",
+            "description": "人类可读；前端不得据此判断逻辑"
+          },
+          "traceId": {
+            "type": "string",
+            "description": "服务端日志关联 id；前端可复制给用户。注意：后端命名为 traceId（非 requestId）"
+          }
+        }
+      }
+    }
+  },
+  "notes": [
+    "后端 openapi 未把 code 声明为 enum，故本表是 code 集合的唯一权威来源；check-contract 对每个响应码只校验 ErrorBody 结构完整性，不校验 code 取值。",
+    "后端所有受保护端点在 openapi 中统一声明了 400/401/403/404/409/413/415/429/500，属 Fastify 全局错误处理器的共享响应集，不代表每个端点都会返回全部码。413/415 在上传端点上是**业务可达**的（体积超限 / 魔数不在白名单），其余端点的 413 仅表示 JSON body 超 32 KiB。",
+    "上传相关的 5 个码（UPLOAD_TOO_LARGE / UNSUPPORTED_MEDIA_TYPE / UPLOAD_NOT_FOUND / UPLOAD_IN_USE / INVALID_ATTACHMENT）与通用的 FORBIDDEN 均由 POST /api/v1/uploads 与 /api/v1/uploads/{id} 引入。",
+    "v0.3.0 新增 9 个码，全部来自第二轮体验改造（DB v3 / 数字 uid / 管理员后台 / 群角色 / 消息置顶）：400 段 CANNOT_CHANGE_OWNER_ROLE、INVALID_MESSAGE；403 段 ACCOUNT_BANNED、MUTED、ADMIN_REQUIRED；404 段 PIN_NOT_FOUND；409 段 CANNOT_DELETE_ADMIN、CANNOT_MUTE_ADMIN、PIN_LIMIT。刻意不新造 422/423/451 之类状态码：禁言用 403 MUTED 而不是 429，因为前者是「权限恒被拒」、后者是「频率超限可重试」；删除/禁言管理员用 409 而不是 403，因为请求本身合法、只是与被保护对象身份冲突。"
+  ],
+  "codes": [
+    {
+      "code": "VALIDATION_ERROR",
+      "http": 400,
+      "when": "schema 校验失败：空白正文、非法 UUID、超长字段、未知字段",
+      "frontend": "按表单字段标红；不重试"
+    },
+    {
+      "code": "BAD_REQUEST",
+      "http": 400,
+      "when": "JSON 解析失败等请求格式错误；HTTP body 超 32 KiB 时亦复用此码（413）",
+      "frontend": "提示请求异常；413 场景提示内容过大"
+    },
+    {
+      "code": "INVALID_AVATAR_URL",
+      "http": 400,
+      "when": "非有效 HTTPS 头像地址",
+      "frontend": "资料编辑表单该字段报错"
+    },
+    {
+      "code": "SELF_FRIEND_REQUEST",
+      "http": 400,
+      "when": "加自己为好友",
+      "frontend": "前端应提前禁用按钮，此为兜底"
+    },
+    {
+      "code": "SELF_CONVERSATION",
+      "http": 400,
+      "when": "与自己建私聊",
+      "frontend": "前端应提前禁用，此为兜底"
+    },
+    {
+      "code": "INVALID_MEMBERS",
+      "http": 400,
+      "when": "群成员列表不合法（含重复、空、非好友）",
+      "frontend": "提示并回到选择成员步骤"
+    },
+    {
+      "code": "GROUP_FULL",
+      "http": 400,
+      "when": "群成员超过 100 人上限",
+      "frontend": "提示群人数上限，禁用添加"
+    },
+    {
+      "code": "GROUP_REQUIRED",
+      "http": 400,
+      "when": "对私聊执行群操作（改名/加人/移除）",
+      "frontend": "隐藏群相关 UI"
+    },
+    {
+      "code": "INVALID_CURSOR",
+      "http": 400,
+      "when": "消息分页游标非法",
+      "frontend": "重置为该会话最新一页"
+    },
+    {
+      "code": "DUPLICATE_CURSOR",
+      "http": 400,
+      "when": "POST /sync 的 cursors 含重复会话",
+      "frontend": "按会话去重后重发；属前端缺陷，需修 build-cursors 逻辑"
+    },
+    {
+      "code": "INVALID_READ_CURSOR",
+      "http": 400,
+      "when": "已读游标为未来 seq 或不对应已有消息",
+      "frontend": "回退为本地 lastSeq 后重试一次；持续失败则忽略"
+    },
+    {
+      "code": "INVALID_ATTACHMENT",
+      "http": 400,
+      "when": "attachmentId 不存在，或该上传物不属于发送者本人",
+      "frontend": "属前端缺陷：attachmentId 必须来自本人刚上传成功的 201 响应，且不能用别人的 id。遇到时提示「附件已失效，请重新上传」"
+    },
+    {
+      "code": "CANNOT_CHANGE_OWNER_ROLE",
+      "http": 400,
+      "when": "POST /api/v1/conversations/{id}/members/{userId}/role 试图把群主本人设成 admin 或 member。",
+      "frontend": "群主身份只由 conversations.owner_id 决定，不可通过接口变更；前端在群主自己那一行隐藏角色切换控件，避免无谓报错。"
+    },
+    {
+      "code": "INVALID_MESSAGE",
+      "http": 400,
+      "when": "POST /api/v1/conversations/{id}/pins 的 msgId 不存在，或存在但不属于本会话。",
+      "frontend": "两种原因刻意合并成同一个码：若分开，404/403 会让 msgId 变成可探测凭据。前端提示「消息不存在或已删除」并刷新消息列表。"
+    },
+    {
+      "code": "UNAUTHORIZED",
+      "http": 401,
+      "when": "token 缺失、失效、已注销或已过期（后端不区分这四种）",
+      "frontend": "全局登出 → 跳登录。注意：无法凭 code 判断是否可 refresh，故 401 一律先试 refresh，失败再登出"
+    },
+    {
+      "code": "INVALID_CREDENTIALS",
+      "http": 401,
+      "when": "登录用户名或密码错误（用户不存在与密码错误同一码，防枚举）",
+      "frontend": "登录表单错误提示"
+    },
+    {
+      "code": "FRIEND_REQUIRED",
+      "http": 403,
+      "when": "给非好友建私聊、或邀请非好友入群",
+      "frontend": "提示先加好友"
+    },
+    {
+      "code": "OWNER_REQUIRED",
+      "http": 403,
+      "when": "非群主执行改名/加人/移除他人",
+      "frontend": "隐藏或禁用该按钮"
+    },
+    {
+      "code": "ORIGIN_FORBIDDEN",
+      "http": 403,
+      "when": "请求 Origin 不在 CORS 白名单",
+      "frontend": "部署配置问题；提示检查后端 CORS 白名单"
+    },
+    {
+      "code": "FORBIDDEN",
+      "http": 403,
+      "when": "已认证但无权访问该资源；当前用于读取/删除他人的上传物",
+      "frontend": "按「无权访问」提示并移除该附件气泡/预览；不要重试。与 404 UPLOAD_NOT_FOUND（资源真的不存在或已删）区分开"
+    },
+    {
+      "code": "ACCOUNT_BANNED",
+      "http": 403,
+      "when": "登录时账号 status=banned。",
+      "frontend": "与 INVALID_CREDENTIALS 区分：可以明确告知「账号已被封禁」，且不要清空用户正在输入的内容；已登录的旧 token 也会在下次鉴权失败。"
+    },
+    {
+      "code": "MUTED",
+      "http": 403,
+      "when": "处于禁言期（users.muted_until 非 null 且晚于当前时间）时发消息。",
+      "frontend": "仅拒绝发送，读消息与历史不受影响；前端可用返回里的 message 或本地 mutedUntil 显示「禁言至 XX」并禁用输入框，而不是提示「无权限」。"
+    },
+    {
+      "code": "ADMIN_REQUIRED",
+      "http": 403,
+      "when": "调用 /api/v1/admin/* 但当前用户 role 不是 admin。",
+      "frontend": "前端据 me.role 决定是否展示管理入口；收到本码说明界面与后端权限不一致，应刷新 me 并隐藏入口。"
+    },
+    {
+      "code": "USER_NOT_FOUND",
+      "http": 404,
+      "when": "用户不存在",
+      "frontend": "搜索无结果态"
+    },
+    {
+      "code": "CONVERSATION_NOT_FOUND",
+      "http": 404,
+      "when": "会话不存在或当前用户非成员（后端刻意统一 404 以避免会话存在性泄露）",
+      "frontend": "清本地该项并返回列表；不可解读为「会话被删」"
+    },
+    {
+      "code": "REQUEST_NOT_FOUND",
+      "http": 404,
+      "when": "好友申请不存在，或处理不属于自己的申请",
+      "frontend": "刷新申请列表"
+    },
+    {
+      "code": "MEMBER_NOT_FOUND",
+      "http": 404,
+      "when": "被移除的成员不在群内",
+      "frontend": "刷新群资料"
+    },
+    {
+      "code": "NOT_FOUND",
+      "http": 404,
+      "when": "其他资源不存在",
+      "frontend": "提示并返回"
+    },
+    {
+      "code": "UPLOAD_NOT_FOUND",
+      "http": 404,
+      "when": "上传物不存在，或已过期/已删除导致磁盘文件缺失",
+      "frontend": "提示「附件已失效」，把气泡降级成灰色占位（保留消息本身，不要删消息）"
+    },
+    {
+      "code": "PIN_NOT_FOUND",
+      "http": 404,
+      "when": "DELETE /api/v1/conversations/{id}/pins/{msgId} 时该消息不在置顶列表里。",
+      "frontend": "并发取消置顶会出现本码，属正常竞争，按成功处理（从本地列表移除）即可，不要弹错误。"
+    },
+    {
+      "code": "USERNAME_TAKEN",
+      "http": 409,
+      "when": "用户名已被占用",
+      "frontend": "注册表单该字段报错"
+    },
+    {
+      "code": "ALREADY_FRIENDS",
+      "http": 409,
+      "when": "已经是好友",
+      "frontend": "幂等友好提示"
+    },
+    {
+      "code": "REQUEST_PENDING",
+      "http": 409,
+      "when": "跨方向已存在 pending 申请",
+      "frontend": "提示「已发送，等待通过」；刷新申请列表"
+    },
+    {
+      "code": "REQUEST_RESOLVED",
+      "http": 409,
+      "when": "重复处理同一条已结束的申请",
+      "frontend": "刷新申请列表"
+    },
+    {
+      "code": "OWNER_CANNOT_LEAVE",
+      "http": 409,
+      "when": "群主尝试退群（MVP 不支持转让）",
+      "frontend": "禁用退群按钮并提示「群主需先转让或解散（二期）」"
+    },
+    {
+      "code": "IDEMPOTENCY_CONFLICT",
+      "http": 409,
+      "when": "同 clientMsgId 但换了会话或正文",
+      "frontend": "属前端缺陷：重试必须复用原 clientMsgId + 原正文，不得换内容"
+    },
+    {
+      "code": "UPLOAD_IN_USE",
+      "http": 409,
+      "when": "该上传物已被某条消息引用：删除时拒绝，或被第二发送复用为附件时拒绝",
+      "frontend": "删除场景静默忽略（说明附件已被消息用掉是对的）；发送场景属前端缺陷：一个上传物只能附着一条消息，需要新消息就重新上传"
+    },
+    {
+      "code": "CANNOT_DELETE_ADMIN",
+      "http": 409,
+      "when": "DELETE /api/v1/admin/users/{uid} 的 uid 属于管理员（role=admin）。",
+      "frontend": "管理员账号不允许自助删除，避免把唯一管理员删掉后整个后台失去入口；前端在管理员那一行禁用删除按钮。"
+    },
+    {
+      "code": "CANNOT_MUTE_ADMIN",
+      "http": 409,
+      "when": "POST /api/v1/admin/users/{uid}/mute 的 uid 属于管理员（role=admin）。",
+      "frontend": "管理员之间不能互相禁言；前端在管理员那一行禁用禁言按钮。"
+    },
+    {
+      "code": "PIN_LIMIT",
+      "http": 409,
+      "when": "POST /api/v1/conversations/{id}/pins 时该会话置顶数已达上限 50。",
+      "frontend": "提示「置顶已达上限，请先取消一条」；不要自动取消最旧的（会静默改用户数据）。"
+    },
+    {
+      "code": "UPLOAD_TOO_LARGE",
+      "http": 413,
+      "when": "上传体积超过 10 MiB（10485760 字节）；裸 body 超过传输层上限 11 MiB 时同样返回此码",
+      "frontend": "在选文件时预校验 size ≤ 10485760 直接拦下；收到此码提示「文件过大，上限 10MB」并清掉本地预览"
+    },
+    {
+      "code": "UNSUPPORTED_MEDIA_TYPE",
+      "http": 415,
+      "when": "上传内容的魔数不在白名单：png/jpeg/webp/gif/pdf/zip/纯文本 之外一律拒绝（Content-Type 声明不参与判定）",
+      "frontend": "提示「不支持的文件类型」；选文件时可用 accept 属性预过滤，但必须接受后端判定为权威（改扩展名绕不过魔数嗅探）"
+    },
+    {
+      "code": "RATE_LIMITED",
+      "http": 429,
+      "when": "超频（普通请求 200/分/用户；登录注册 10/分/IP；发消息 60/分/用户）",
+      "frontend": "按 Retry-After 等待；WS 侧走退避"
+    },
+    {
+      "code": "INTERNAL_ERROR",
+      "http": 500,
+      "when": "服务内部错误（不返回堆栈或数据库细节）",
+      "frontend": "通用 toast + traceId 可复制"
+    }
+  ],
+  "wsErrorFrame": {
+    "description": "WS 的 error 帧 data 复用同一 code/message 结构；当前后端仅定义了 INVALID_EVENT。",
+    "codes": [
+      {
+        "code": "INVALID_EVENT",
+        "when": "客户端发了无法解析或不符合契约的帧",
+        "frontend": "记录 warn，检查出站帧构造；不重连"
+      }
+    ]
+  },
+  "wsCloseCodes": {
+    "$comment": "以后端 API.md 第 6 节关闭码表为事实源（v0.2.0）。【必】4003 与 1008 语义必须分开：4003=session 层失效（登出信号），1008=连接层限流（退避信号），混用会让前端无法判断该登出还是该重连。v0.1 自拟的 4004/4029/1011 后端并未采用，已删除。",
+    "serverEmitted": [
+      {
+        "code": 4001,
+        "meaning": "ticket 缺失/格式错误/失效/已用",
+        "frontend": "重新申请 ticket 后重连（可自愈）；若同期 REST 返回 401 则改为登出"
+      },
+      {
+        "code": 4002,
+        "meaning": "不支持的 v（协议版本不匹配）",
+        "frontend": "提示刷新/更新前端；不盲目重连"
+      },
+      {
+        "code": 4003,
+        "meaning": "session 过期或已注销",
+        "frontend": "**【必】停止自动重连**，清登录状态并跳登录；禁止对失效 token 调 refresh（后端 refresh 只接受仍有效的 token）"
+      },
+      {
+        "code": 1003,
+        "meaning": "收到二进制帧（不受支持）",
+        "frontend": "视作客户端缺陷：停止重连并打日志；前端只发 JSON 文本帧"
+      },
+      {
+        "code": 1008,
+        "meaning": "超出连接数上限（每用户最多 5 条）或超出帧频（30 帧/10 秒）",
+        "frontend": "退避重连；**不得据此登出**（session 失效已由 4003 承载）"
+      },
+      {
+        "code": 1009,
+        "meaning": "单帧超过 4 KiB",
+        "frontend": "前端缺陷：检查出站帧体积（严禁把大 payload 塞进 WS）"
+      },
+      {
+        "code": 1013,
+        "meaning": "慢消费者，服务端积压超 1 MiB 主动断开",
+        "frontend": "退避重连并走一次 sync 补偿"
+      },
+      {
+        "code": 1006,
+        "meaning": "非正常断连或心跳超时",
+        "frontend": "指数退避 + 获取新票据后重连"
+      }
+    ],
+    "clientSynthetic": [
+      {
+        "code": 1000,
+        "meaning": "客户端主动正常关闭（登出、路由离开）",
+        "frontend": "不重连"
+      },
+      {
+        "code": 1001,
+        "meaning": "客户端看门狗超时后主动关闭",
+        "frontend": "由 client.ts 自行发起，关闭后照常退避重连"
+      },
+      {
+        "code": 4000,
+        "meaning": "前端合成：协议版本不匹配时主动关闭（等价服务端 4002 语义）",
+        "frontend": "不重连；仅用于本地状态机收敛"
+      }
+    ]
+  }
+}

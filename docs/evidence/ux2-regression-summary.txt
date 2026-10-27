@@ -1,0 +1,23 @@
+启动后端 3098 pid=30048 db=C:\Users\31626\AppData\Local\Temp\ux2-reg\chat.sqlite
+启动前端 5174 pid=9300
+自检 1 VITE_USE_MOCK=false ... 通过
+自检 2 GET /api/v1/health via 5174 proxy = 200
+自检 3 管理员 1001 登录 = 200
+
+──── 运行 e2e-gates.mjs（期望 13 PASS / 0 FAIL / 1 SKIP）────
+e2e-gates.mjs EXIT=0  === 汇总：14 项 —— 通过 13，失败 0，待验 1 ===
+
+──── 运行 e2e-responsive.mjs（期望 117 / 0）────
+e2e-responsive.mjs EXIT=0  === 汇总：117 项断言，0 项失败 ===
+
+──── 运行 e2e-matrix.mjs（期望 93 PASS / 0 FAIL / 0 DEFECT）────
+e2e-matrix.mjs EXIT=0  === 汇总：93 项 —— 通过 93，失败 0，产品缺陷 0，待验 0 ===
+
+──── 运行 e2e-attachment.mjs（期望 37 PASS / 0 FAIL）────
+e2e-attachment.mjs EXIT=0  === 汇总：38 项 —— 通过 38，失败 0，产品缺陷 0，待验 0 ===
+
+──── 四套汇总 ────
+e2e-gates.mjs	EXIT=0	=== 汇总：14 项 —— 通过 13，失败 0，待验 1 ===	B:\AITrance\docs\evidence\e2e-gates-run-ux2.txt
+e2e-responsive.mjs	EXIT=0	=== 汇总：117 项断言，0 项失败 ===	B:\AITrance\docs\evidence\e2e-responsive-run-ux2.txt
+e2e-matrix.mjs	EXIT=0	=== 汇总：93 项 —— 通过 93，失败 0，产品缺陷 0，待验 0 ===	B:\AITrance\docs\evidence\e2e-matrix-run-ux2.txt
+e2e-attachment.mjs	EXIT=0	=== 汇总：38 项 —— 通过 38，失败 0，产品缺陷 0，待验 0 ===	B:\AITrance\docs\evidence\e2e-attachment-run-ux2.txt

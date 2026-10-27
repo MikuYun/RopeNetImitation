@@ -1,0 +1,33 @@
+{
+  "name": "webchat-backend",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node --watch --env-file-if-exists=.env --experimental-strip-types src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file-if-exists=.env dist/src/server.js",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "docs": "npm run build && node dist/scripts/openapi.js",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.0.0",
+    "@fastify/rate-limit": "^10.0.0",
+    "@fastify/swagger": "^9.0.0",
+    "@fastify/swagger-ui": "^6.1.1",
+    "@fastify/type-provider-typebox": "^5.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "@sinclair/typebox": "^0.34.0",
+    "fastify": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.5.0",
+    "typescript": "^5.8.0",
+    "ws": "^8.18.0"
+  }
+}

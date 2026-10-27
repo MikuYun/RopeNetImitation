@@ -1,0 +1,2469 @@
+{
+  "$comment": "aitrance-chat REST 契约需求书 v0.3.0。事实源为 backend/openapi.json (openapi 3.0.3, info.version 0.2.0) 与 backend/API.md。本文档不发明第二套 API：路径、字段名、包装、错误码一律以后端已实现者为准。本文件的作用是（1）记录前端对每个字段的依赖强度（required 表示前端会崩），（2）给 check-contract.mjs 提供机械比对基准。v0.1.0 中被后端拒绝的提案已删除，差异逐条记录在 endpoints[].diff。 v0.3.0（第二轮体验改造）：新增 3 个置顶端点（P1/P2/P3）、1 个群角色端点（C9）、4 个管理后台端点（D1~D4）；User 增 uid/role/status/mutedUntil，ConversationMember.role 与 Conversation.myRole 扩为 owner|admin|member，登录 username 放宽为「用户名或纯数字 uid」，PUT 头像放宽到 /api/v1/uploads/<uuid>，GET /api/v1/uploads/{id} 的可读范围从「仅属主」放宽到「属主或同会话成员」。openapi 的 info.version 仍是 0.2.0：以上全部属新增端点/新增可选字段/新增枚举值，按 docs/09-contract-changelog.md 的规则不 bump。",
+  "version": "0.3.0",
+  "supersedes": "0.2.0",
+  "openapiVersion": "0.2.0",
+  "sourceOfTruth": "backend/openapi.json + backend/API.md",
+  "alignment": "check-contract.mjs 以本文件为基准反向比对 backend/openapi.json，输出 docs/contract/diff-report.md",
+  "conventions": {
+    "basePath": "/api/v1",
+    "healthPath": "/health",
+    "serverOrigin": "http://127.0.0.1:3001",
+    "healthNote": "后端同时提供 /health（无前缀）与 /api/v1/health（带前缀，返回 version/protocolVersion/serverTime）。前端联调打带前缀的那个，并把 /health 加入 Vite 代理白名单。",
+    "auth": "Authorization: Bearer <token>；opaque session token，非 JWT，前端不得尝试解码。有效期默认 7 天。",
+    "datetime": "ISO 8601 UTC 毫秒，例 2026-09-28T09:15:22.481Z",
+    "ids": "一律 UUID 字符串。前端禁止对 ID 做算术或大小比较；clientMsgId 亦为 UUID，必须由前端用 crypto.randomUUID 生成（带非安全上下文兜底）。",
+    "seq": "会话内从 1 开始的安全整数，占用连续编号（含 system 消息）。唯一排序依据；禁用 createdAt 排序。",
+    "readCursor": "已读游标从 0 开始，单调不回退，0 合法。",
+    "pagination": "列表统一 {items, nextOffset}；nextOffset=null 表示末页。limit 默认 30 最大 100，offset 默认 0。limit/offset 在 openapi 中声明为 required 参数，前端必须显式传值。",
+    "messagePagination": "消息历史用 seq 游标 {items, hasMore, nextBeforeSeq, nextAfterSeq}；items 恒为 seq 升序。beforeSeq 与 afterSeq 互斥。",
+    "collectionWrapper": "列表端点一律返回 {items, ...}，不裸数组。",
+    "sorting": "会话列表由服务端按 updatedAt DESC, id DESC 排序；前端不二次排序，仅在有本地乐观变更时局部保持位置。",
+    "additionalProperties": "后端请求体为 additionalProperties:false（禁止未知字段）。前端发请求必须精确匹配，不得多传字段。",
+    "unknownFieldsOnRead": "服务端响应中多出字段时前端必须容错（后端明示支持字段追加），故比对时新增响应字段记为 WARN 而非 ERROR。",
+    "errorEnvelope": "{error:{code,message,traceId}}，见 errors.json。前端只按 code 分支。",
+    "unreadAuthority": "unreadCount 一律以服务端为准。前端本地清零仅作乐观显示，收到服务端权威值后立即覆盖。",
+    "textSafety": "消息正文与昵称由后端原样返回，前端必须文本渲染，严禁 v-html 或任何 HTML 注入路径。",
+    "versionFields": "两个不同的版本字段：【version】= 后端实现版本（字符串，如 0.2.0），随实现迭代；【protocolVersion】= 协议版本（数字，当前 1），只在协议不兼容时 bump。前端只对 protocolVersion 做比对与告警，对 version 仅打印。"
+  },
+  "definitions": {
+    "User": {
+      "type": "object",
+      "required": [
+        "id",
+        "uid",
+        "username",
+        "displayName",
+        "avatarUrl",
+        "bio",
+        "role",
+        "status",
+        "mutedUntil",
+        "createdAt",
+        "online"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "uid": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "对外展示、也可用于登录的稳定数字编号。管理员固定 1001，普通用户从 10001 起单调递增，删除后不复用。"
+        },
+        "username": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 32,
+          "pattern": "^[A-Za-z0-9_]+$",
+          "description": "统一小写存储，登录不区分大小写"
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "空串表示无头像；否则为 https 外链或站内 /api/v1/uploads/<uuid>（后者必须是本人上传且 kind=image，否则 400 INVALID_AVATAR_URL）。"
+        },
+        "bio": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "user",
+            "admin"
+          ],
+          "description": "user=普通用户，admin=管理员。只有 admin 才能调用 /api/v1/admin/* 接口，否则 403 ADMIN_REQUIRED。"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "active",
+            "banned"
+          ],
+          "description": "banned 后无法登录（403 ACCOUNT_BANNED），已签发的 token 也不能再通过鉴权。"
+        },
+        "mutedUntil": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true,
+          "description": "恒存在的可空字段：非 null 且晚于当前时间才算「当前被禁言」，此时发消息返回 403 MUTED；null 表示未禁言。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "online": {
+          "type": "boolean",
+          "description": "当前有至少一条有效 WS 连接；不是最后活跃时间。前端首屏在线状态依赖它，WS presence.changed 到达后增量更新。"
+        }
+      }
+    },
+    "AuthResult": {
+      "type": "object",
+      "required": [
+        "token",
+        "tokenType",
+        "expiresAt",
+        "user"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
+        },
+        "tokenType": {
+          "type": "string",
+          "enum": [
+            "Bearer"
+          ]
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "user": {
+          "$ref": "#/definitions/User"
+        }
+      },
+      "note": "扁平结构（非 v0.1 提案的 {user,session}）。refresh 与 session 返回同一形状，且 token 不变、仅 expiresAt 后移。"
+    },
+    "Page": {
+      "type": "object",
+      "required": [
+        "items",
+        "nextOffset"
+      ],
+      "properties": {
+        "items": {
+          "type": "array"
+        },
+        "nextOffset": {
+          "type": "integer",
+          "nullable": true,
+          "description": "null = 末页"
+        }
+      }
+    },
+    "FriendRequest": {
+      "type": "object",
+      "required": [
+        "id",
+        "sender",
+        "recipient",
+        "note",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "sender": {
+          "$ref": "#/definitions/User"
+        },
+        "recipient": {
+          "$ref": "#/definitions/User"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pending",
+            "accepted",
+            "rejected"
+          ]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "无 direction 字段：前端按 sender.id === selfId 推导 incoming/outgoing。"
+    },
+    "Message": {
+      "type": "object",
+      "required": [
+        "msgId",
+        "conversationId",
+        "senderId",
+        "clientMsgId",
+        "seq",
+        "type",
+        "content",
+        "attachment",
+        "createdAt"
+      ],
+      "properties": {
+        "msgId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "服务端生成的全局唯一 ID；前端去重的层2 键"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "senderId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "system 消息的 senderId 为操作者"
+        },
+        "clientMsgId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "客户端生成；system 消息由服务端生成。前端层1 去重键。"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "会话内单调递增且连续，system 消息同样占号"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "text",
+            "system",
+            "image",
+            "file"
+          ],
+          "description": "text/system 由服务端与客户端写入；image/file 仅由服务端在发送附件消息时按上传物 kind 推导，客户端不得自行指定。"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 4000,
+          "description": "system 消息的 content 为服务端渲染好的纯文本，前端直接渲染，绝不能当 HTML。"
+        },
+        "attachment": {
+          "type": "object",
+          "nullable": true,
+          "allOf": [
+            {
+              "$ref": "#/definitions/Attachment"
+            }
+          ],
+          "description": "附件视图；纯文本与 system 消息恒为 null（字段恒存在，不是省略）。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "字段名为 content（非 v0.1 提案的 body.text）；Message 无独立 id 字段，主键即 msgId。本轮上传扩展起 type 增加 image/file，并新增恒存在的可空字段 attachment（openapi 版本号仍为 0.2.0，属向后兼容增量）。"
+    },
+    "ConversationMember": {
+      "type": "object",
+      "required": [
+        "user",
+        "role",
+        "joinedAt",
+        "lastReadSeq"
+      ],
+      "properties": {
+        "user": {
+          "$ref": "#/definitions/User"
+        },
+        "role": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member"
+          ]
+        },
+        "joinedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lastReadSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "群聊「N 人已读」的唯一依据：lastReadSeq >= message.seq 且排除发送者。前端不得为此发额外请求。"
+        }
+      }
+    },
+    "Conversation": {
+      "type": "object",
+      "required": [
+        "id",
+        "type",
+        "name",
+        "title",
+        "avatarUrl",
+        "memberCount",
+        "myRole",
+        "ownerId",
+        "createdAt",
+        "updatedAt",
+        "members",
+        "unreadCount",
+        "lastSeq",
+        "lastReadSeq",
+        "lastMessage"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "single",
+            "group"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "description": "原始群名；私聊为空串"
+        },
+        "title": {
+          "type": "string",
+          "description": "请求者视角展示标题：私聊=对方昵称，群聊=群名。前端直接用，不自行推导。"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "私聊=对方头像；群聊为空串，前端生成默认头像"
+        },
+        "peer": {
+          "$ref": "#/definitions/User",
+          "nullable": true,
+          "required": false,
+          "description": "私聊的对方；群聊不返回此字段"
+        },
+        "ownerId": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "群主；私聊为 null"
+        },
+        "memberCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "myRole": {
+          "type": "string",
+          "enum": [
+            "owner",
+            "admin",
+            "member"
+          ],
+          "description": "请求者在本会话的角色。owner 由 conversations.owner_id 决定，admin 由群主授予，member 是默认值；私聊里双方都是 member。前端白名单外一律降级为 member。"
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/ConversationMember"
+          }
+        },
+        "lastMessage": {
+          "$ref": "#/definitions/Message",
+          "nullable": true
+        },
+        "lastSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "最新消息序号；无消息时为 0"
+        },
+        "lastReadSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "当前请求者的已读序号"
+        },
+        "unreadCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "当前请求者未读到且非自己发送的消息数（含他人产生的 system）。服务端权威值。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "列表项与详情项返回同一完整对象（非 v0.1 的 Summary/Detail 二分）。"
+    },
+    "MessagePage": {
+      "type": "object",
+      "required": [
+        "items",
+        "hasMore",
+        "nextBeforeSeq",
+        "nextAfterSeq"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Message"
+          }
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextBeforeSeq": {
+          "type": "integer",
+          "nullable": true,
+          "description": "向上翻页游标；null = 没有更早的"
+        },
+        "nextAfterSeq": {
+          "type": "integer",
+          "nullable": true,
+          "description": "向后补齐游标；null = 已到最新"
+        }
+      }
+    },
+    "SyncItem": {
+      "type": "object",
+      "required": [
+        "conversationId",
+        "messages",
+        "lastSeq",
+        "unreadCount",
+        "hasMore",
+        "nextSeq"
+      ],
+      "properties": {
+        "conversationId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "messages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Message"
+          },
+          "description": "seq 升序"
+        },
+        "lastSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "服务端当前最高序号。前端禁止据此跳跃推进本地游标。"
+        },
+        "unreadCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "nextSeq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "本页实际最后返回序号；无消息时等于输入游标。hasMore 为真时只推进到 nextSeq，否则漏消息。"
+        }
+      }
+    },
+    "Ok": {
+      "type": "object",
+      "required": [
+        "ok"
+      ],
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "enum": [
+            true
+          ]
+        }
+      }
+    },
+    "Health": {
+      "type": "object",
+      "required": [
+        "status",
+        "version",
+        "protocolVersion",
+        "serverTime"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "ok"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "description": "后端实现版本（当前 0.2.0）"
+        },
+        "protocolVersion": {
+          "type": "number",
+          "enum": [
+            1
+          ],
+          "description": "WS/REST 协议版本号，当前为数字 1（不是实现版本 0.2.0）。前端用于与本地 WS_PROTOCOL_VERSION 比对：不等则提示刷新并停止重连。"
+        },
+        "serverTime": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "WsTicket": {
+      "type": "object",
+      "required": [
+        "ticket",
+        "expiresIn"
+      ],
+      "properties": {
+        "ticket": {
+          "type": "string"
+        },
+        "expiresIn": {
+          "type": "number",
+          "enum": [
+            30
+          ],
+          "description": "秒。仅作日志与退避参考；前端不得自行推算票据绝对到期时刻。"
+        }
+      }
+    },
+    "ErrorBody": {
+      "type": "object",
+      "required": [
+        "error"
+      ],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": [
+            "code",
+            "message",
+            "traceId"
+          ],
+          "properties": {
+            "code": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            },
+            "traceId": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "Attachment": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mimeType",
+        "size",
+        "kind",
+        "url",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "上传物 ID（UUID）。下载需带 Bearer，不能直接塞进 <img src>。"
+        },
+        "name": {
+          "type": "string",
+          "description": "展示用文件名；服务端已剔除路径分隔符与控制字符，直接渲染即可。"
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "服务端按魔数嗅探出的类型，非客户端声明值。"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "file"
+          ]
+        },
+        "url": {
+          "type": "string",
+          "description": "相对路径 /api/v1/uploads/<id>；必须带 Authorization 头取字节，前端转 blob URL 后渲染。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "附件视图。刻意不暴露 ownerId 与 sha256：ownerId 无前端用途且属隐私，sha256 仅在上传 201 响应里给一次供完整性校验。"
+    },
+    "Upload": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "mimeType",
+        "size",
+        "sha256",
+        "kind",
+        "url",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "服务端按魔数嗅探，白名单：image/png、image/jpeg、image/webp、image/gif、application/pdf、application/zip、text/plain。"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10485760,
+          "description": "1..10485760 字节；裸 body 上限 11 MiB 是给「超限要能回 413 而不是断开」留的余量。"
+        },
+        "sha256": {
+          "type": "string",
+          "description": "服务端边写边算的十六进制摘要，仅上传响应返回，用于客户端校验落盘一致性。"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image",
+            "file"
+          ],
+          "description": "image 当且仅当 mimeType 以 image/ 开头；决定消息 type 与下载时的 Content-Disposition。"
+        },
+        "url": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "PinnedMessage": {
+      "type": "object",
+      "required": [
+        "id",
+        "message",
+        "pinnedBy",
+        "pinnedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "置顶记录本身的 UUID（不是消息 UUID）。"
+        },
+        "message": {
+          "$ref": "#/definitions/Message"
+        },
+        "pinnedBy": {
+          "$ref": "#/definitions/User"
+        },
+        "pinnedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "置顶条直接内嵌完整 Message 与 User，前端不必为置顶列表再拉一次消息/用户。"
+    },
+    "PinnedMessagePage": {
+      "type": "object",
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PinnedMessage"
+          }
+        }
+      },
+      "note": "按 pinnedAt 倒序（最新置顶在前）；不是分页结构，单会话上限 50 条（超出 409 PIN_LIMIT）。"
+    },
+    "AdminUserPage": {
+      "type": "object",
+      "required": [
+        "items",
+        "nextOffset"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/User"
+          }
+        },
+        "nextOffset": {
+          "type": "integer",
+          "minimum": 0,
+          "nullable": true,
+          "description": "null = 末页"
+        }
+      }
+    },
+    "AdminStats": {
+      "type": "object",
+      "required": [
+        "users",
+        "conversations",
+        "messages",
+        "uploads",
+        "online"
+      ],
+      "properties": {
+        "users": {
+          "type": "integer"
+        },
+        "conversations": {
+          "type": "integer"
+        },
+        "messages": {
+          "type": "integer"
+        },
+        "uploads": {
+          "type": "integer"
+        },
+        "online": {
+          "type": "integer",
+          "description": "当前有至少一条活跃 WS 连接的**去重用户数**，不是连接数。"
+        }
+      }
+    }
+  },
+  "endpoints": [
+    {
+      "id": "H0",
+      "method": "GET",
+      "path": "/health",
+      "required": false,
+      "success": 200,
+      "summary": "无前缀健康检查（后端同时提供）。前端联调主用 H1。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Health"
+      },
+      "responseCodes": [
+        200
+      ],
+      "errorCodes": [],
+      "diff": "v0.1 未预期此路径，且我方初稿误以为它只返回 status。后端实际返回与 /api/v1/health 完全一致的 Health 对象。前端 Vite 代理需同时放行 /health。"
+    },
+    {
+      "id": "H1",
+      "method": "GET",
+      "path": "/api/v1/health",
+      "required": true,
+      "success": 200,
+      "summary": "联调第一条命令：确认端口 / base path / 时间格式 / 协议版本四件事。无需认证。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Health"
+      },
+      "responseCodes": [
+        200
+      ],
+      "errorCodes": [],
+      "diff": "v0.1 只声明 /health 且把 protocolVersion 误写为 string（0.2.0）。后端已按前端要求补 /api/v1/health 别名（diff-report B5 已解决），且 protocolVersion 实际为 number enum [1]（协议版本，非实现版本）。已按后端事实修正。"
+    },
+    {
+      "id": "A1",
+      "method": "POST",
+      "path": "/api/v1/auth/register",
+      "required": true,
+      "success": 201,
+      "summary": "注册并直接登录，返回扁平 AuthResult。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "username",
+          "password",
+          "displayName"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 32,
+            "pattern": "^[A-Za-z0-9_]+$"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          },
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/AuthResult"
+      },
+      "responseCodes": [
+        201,
+        400,
+        409,
+        413,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "USERNAME_TAKEN",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.1 把 displayName 与 password 上限写成可选/72；后端为必填、上限 128。以后端为准。"
+    },
+    {
+      "id": "A2",
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "required": true,
+      "success": 200,
+      "summary": "账号密码登录（用户名或纯数字 UID）",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 32,
+            "description": "用户名或纯数字 UID。全数字时按 users.uid 精确匹配（如管理员 1001），否则按用户名小写化匹配。因此不再强制 ^[A-Za-z0-9_]+$ 与 minLength 3 —— uid 最短只有 4 位但仍应由后端判定，前端不要提前拦。"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 128
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/AuthResult"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "INVALID_CREDENTIALS",
+        "ACCOUNT_BANNED",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.1 用 AUTH_INVALID_CREDENTIALS；后端为 INVALID_CREDENTIALS。 v0.3.0 起 username 放宽为「用户名或纯数字 UID」：全数字时按 uid 精确匹配。banned 账号返回 403 ACCOUNT_BANNED（与 401 INVALID_CREDENTIALS 区分：前者是密码正确但账号被封）。"
+    },
+    {
+      "id": "A3",
+      "method": "POST",
+      "path": "/api/v1/auth/logout",
+      "required": true,
+      "success": 200,
+      "summary": "注销当前 token 及对应实时连接；废弃未使用票据。只影响当前会话。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Ok"
+      },
+      "responseCodes": [
+        200,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 204；后端为 200 {ok:true}。"
+    },
+    {
+      "id": "A4",
+      "method": "GET",
+      "path": "/api/v1/auth/session",
+      "required": true,
+      "success": 200,
+      "summary": "校验当前会话并拿到权威 expiresAt。冷启动必调。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/AuthResult"
+      },
+      "responseCodes": [
+        200,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟返回 {session,user}；后端直接返回完整 AuthResult。"
+    },
+    {
+      "id": "A5",
+      "method": "POST",
+      "path": "/api/v1/auth/session/refresh",
+      "required": true,
+      "success": 200,
+      "summary": "滑动续期。【不轮换 token】，仅后移 expiresAt。只接受仍有效的 token：已过期或已注销返回 401，不能凭 refresh 复活。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/AuthResult"
+      },
+      "responseCodes": [
+        200,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟返回 {session}；后端返回完整 AuthResult。不轮换这一点后端已按前端要求实现（多标签页互踢风险已消除）。",
+      "frontendContract": "前端在 expiresAt-60s 静默续期。因不轮换，多标签页可各自刷新而不互踢；但 401 时仍走单飞，避免并发打多次。"
+    },
+    {
+      "id": "A6",
+      "method": "POST",
+      "path": "/api/v1/auth/ws-ticket",
+      "required": true,
+      "success": 200,
+      "summary": "签发 30 秒有效的一次性 WebSocket 票据。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/WsTicket"
+      },
+      "responseCodes": [
+        200,
+        401,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.1 拟 POST /ws/ticket 且 201 {ticket,expiresAt,ttlSeconds}；后端为 POST /auth/ws-ticket + 200 {ticket,expiresIn}。",
+      "frontendContract": "【前端强制纪律】(1) 禁止缓存，每个 WebSocket 对象配一个新 ticket；(2) 获取必须单飞，避免并发重连打出多个一次性票据；(3) 401 则登出、429 按 Retry-After、其余退避；(4) 建立连接后票据过期不得断开连接 —— 后端已确认「票据 TTL 不控制已连接寿命」。"
+    },
+    {
+      "id": "U1",
+      "method": "GET",
+      "path": "/api/v1/users/me",
+      "required": true,
+      "success": 200,
+      "summary": "获取本人资料。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/User"
+      },
+      "responseCodes": [
+        200,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 {user} 包装；后端直接返回 User。已按后端调整。"
+    },
+    {
+      "id": "U2",
+      "method": "PATCH",
+      "path": "/api/v1/users/me",
+      "required": true,
+      "success": 200,
+      "summary": "编辑本人资料。至少传一个字段。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [],
+        "properties": {
+          "displayName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "avatarUrl": {
+            "type": "string",
+            "description": "空串表示清空头像；否则须为 HTTPS URL"
+          },
+          "bio": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/User"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "INVALID_AVATAR_URL",
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 signature（≤60）且不支持 avatarUrl；后端统一为 bio（≤200）+ avatarUrl。前端资料编辑表单已改用 bio。"
+    },
+    {
+      "id": "U3",
+      "method": "GET",
+      "path": "/api/v1/users",
+      "required": true,
+      "success": 200,
+      "summary": "按用户名或昵称模糊搜索其他用户；自动转义 % 与 _；不返回自己。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "required": [
+          "q",
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "q": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Page"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/User"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "RATE_LIMITED",
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 GET /users/search 精确匹配 + 返回 relationship；后端为 GET /users?q=&limit=&offset= 模糊匹配且不返回 relationship。前端在 normalize 层用已加载的好友/申请列表本地推导 relationship（见 diff-report A12）。",
+      "frontendContract": "limit/offset 在 openapi 中为 required，前端必须显式传值（不可依赖默认）。"
+    },
+    {
+      "id": "F1",
+      "method": "GET",
+      "path": "/api/v1/friends",
+      "required": true,
+      "success": 200,
+      "summary": "好友列表，返回纯 User 数组。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "required": [
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Page"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/User"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 {items:[{user,since}]} 且不翻页；后端为纯 User 数组 + offset 分页。前端 since 用 createdAt 兜底（见 diff-report A9）。"
+    },
+    {
+      "id": "F2",
+      "method": "GET",
+      "path": "/api/v1/friend-requests",
+      "required": true,
+      "success": 200,
+      "summary": "获取发出及收到的好友申请。不传 status 返回全部；一次申请同时出现在双方列表。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "required": [
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "accepted",
+              "rejected"
+            ]
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Page"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/FriendRequest"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 GET /friends/requests?direction=incoming 分两个方向查；后端单一端点、无 direction。前端取全部后按 sender.id 本地分流（见 diff-report A10）。",
+      "frontendContract": "后端不区分方向，故「收到的待处理申请」= items 中 sender.id !== selfId 且 status==='pending'。前端不得依赖 direction 字段。"
+    },
+    {
+      "id": "F3",
+      "method": "POST",
+      "path": "/api/v1/friend-requests",
+      "required": true,
+      "success": 201,
+      "summary": "发起好友申请。跨方向重复 pending 返回 409；拒绝后可重新申请。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "userId",
+          "note"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/FriendRequest"
+      },
+      "responseCodes": [
+        201,
+        400,
+        401,
+        404,
+        409,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "SELF_FRIEND_REQUEST",
+        "USER_NOT_FOUND",
+        "REQUEST_PENDING",
+        "ALREADY_FRIENDS",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.1 拟 POST /friends/requests {toUserId,message?}；后端为 /friend-requests {userId,note}，且 note 在 openapi 中为 required（前端必须传，可为空串）。"
+    },
+    {
+      "id": "F4",
+      "method": "POST",
+      "path": "/api/v1/friend-requests/{requestId}/respond",
+      "required": true,
+      "success": 200,
+      "summary": "接收方同意或拒绝好友申请。只有接收方能处理，无权限也返回 404。",
+      "pathParams": [
+        {
+          "name": "requestId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "reject"
+            ]
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/FriendRequest"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        409,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "REQUEST_NOT_FOUND",
+        "REQUEST_RESOLVED"
+      ],
+      "diff": "v0.1 拟 POST /friends/requests/{id}/accept 与 /reject 两个端点并原子返回 {friend,conversation}；后端为单端点 respond {action} 并只返回 FriendRequest。",
+      "frontendContract": "【重要】通过好友申请不会自动创建私聊。前端在 accept 成功后，需在用户点击「发消息」时调用 POST /conversations/direct（后端保证幂等）。不得在 accept 响应里期待 conversation 字段。"
+    },
+    {
+      "id": "C1",
+      "method": "GET",
+      "path": "/api/v1/conversations",
+      "required": true,
+      "success": 200,
+      "summary": "按最近活动分页获取会话。服务端按 updatedAt DESC, id DESC 排序。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "required": [
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Page"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "items": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/definitions/Conversation"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟不翻页 + 游标；后端为 offset 分页。前端以 limit=200 一次拉取（MVP 会话量小）。",
+      "frontendContract": "offset 分页在并发有新活动时可能重复/漏项，前端必须按 id 去重；消息历史用稳定 seq 游标不受此影响。"
+    },
+    {
+      "id": "C2",
+      "method": "POST",
+      "path": "/api/v1/conversations/direct",
+      "required": true,
+      "success": 200,
+      "summary": "获取或创建唯一好友私聊。必须已是好友；可重复调用（幂等）。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "userId"
+        ],
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Conversation"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "FRIEND_REQUIRED",
+        "SELF_CONVERSATION",
+        "USER_NOT_FOUND"
+      ],
+      "diff": "v0.1 拟统一 POST /conversations {type:'single'|'group'}；后端拆成 /conversations/direct。",
+      "frontendContract": "成功码为 200（非 201）。因幂等，前端无需先查后建，并发点击也安全。"
+    },
+    {
+      "id": "C3",
+      "method": "POST",
+      "path": "/api/v1/conversations/group",
+      "required": true,
+      "success": 201,
+      "summary": "创建群聊，创建者自动成为群主并入群。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "name",
+          "memberIds"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60
+          },
+          "memberIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 99,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Conversation"
+      },
+      "responseCodes": [
+        201,
+        400,
+        401,
+        403,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "INVALID_MEMBERS",
+        "FRIEND_REQUIRED",
+        "GROUP_FULL"
+      ],
+      "diff": "v0.1 拟群名 ≤30、成员上限 200；后端为群名 ≤60、memberIds 1–99（uniqueItems，不含自己，自己自动入群）、总成员上限 100。前端成员选择器上限按 99（不含自己）校验。"
+    },
+    {
+      "id": "C4",
+      "method": "GET",
+      "path": "/api/v1/conversations/{conversationId}",
+      "required": true,
+      "success": 200,
+      "summary": "获取会话成员、最新消息及未读数。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Conversation"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "CONVERSATION_NOT_FOUND",
+        "UNAUTHORIZED"
+      ],
+      "diff": "v0.1 拟 {conversation} 包装 + Summary/Detail 二分；后端直接返回完整 Conversation（含 members）。非成员统一 404（不泄露存在性）。",
+      "frontendContract": "不可把 404 解读为「会话被删除」，应先刷新会话列表再决定是否移除本地项。"
+    },
+    {
+      "id": "C5",
+      "method": "PATCH",
+      "path": "/api/v1/conversations/{conversationId}",
+      "required": true,
+      "success": 200,
+      "summary": "群主或管理员修改群名/群头像。至少给一个字段。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [],
+        "minProperties": 1,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "pattern": "\\S"
+          },
+          "avatarUrl": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "空串=清空群头像；https 外链；或 /api/v1/uploads/<uuid>（须本人上传且 kind=image）。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Conversation"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "OWNER_REQUIRED",
+        "GROUP_REQUIRED",
+        "INVALID_AVATAR_URL",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "v0.1 拟 body {name?} 可选且只需 name；v0.3.0 起 name 与 avatarUrl 各自可选但至少给一个（minProperties=1），结束「只能改群名」的限制。错误码沿用 VALIDATION_ERROR，头像非法为 INVALID_AVATAR_URL。",
+      "frontendContract": "前端整体替换返回的 Conversation，不做增量猜测。avatarUrl 传空串表示清空；UI 上传流程：先 POST /api/v1/uploads 拿 201.url，再把 url 传进来。"
+    },
+    {
+      "id": "C6",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/members",
+      "required": true,
+      "success": 200,
+      "summary": "群主邀请自己的好友入群。重复邀请已有成员被忽略（幂等）。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "memberIds"
+        ],
+        "properties": {
+          "memberIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 99,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Conversation"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "INVALID_MEMBERS",
+        "OWNER_REQUIRED",
+        "FRIEND_REQUIRED",
+        "GROUP_FULL"
+      ],
+      "diff": "v0.1 拟返回 ConversationDetail；后端直接返回完整 Conversation。前端整体替换缓存，不做增量猜测。"
+    },
+    {
+      "id": "C7",
+      "method": "DELETE",
+      "path": "/api/v1/conversations/{conversationId}/members/{userId}",
+      "required": true,
+      "success": 200,
+      "summary": "群主移除成员，或普通成员退群。群主不能退群或转让。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "userId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Ok"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        500
+      ],
+      "errorCodes": [
+        "OWNER_REQUIRED",
+        "OWNER_CANNOT_LEAVE",
+        "MEMBER_NOT_FOUND",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "v0.1 拟返回 ConversationDetail 且错误码 NOT_GROUP/FORBIDDEN_NOT_OWNER；后端返回 {ok:true}，码为 GROUP_REQUIRED/OWNER_REQUIRED/OWNER_CANNOT_LEAVE。",
+      "frontendContract": "因为只返回 {ok:true}，前端必须在成功后本地刷新会话详情（或直接从本地 members 移除）。被移除者由 WS conversation.removed 通知。"
+    },
+    {
+      "id": "C8",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/read",
+      "required": true,
+      "success": 204,
+      "summary": "提交单调递增的已读位置。只前进不回退；0 合法；正数必须对应当前会话已有消息，不能提交未来游标。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "lastReadSeq"
+        ],
+        "properties": {
+          "lastReadSeq": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "response": null,
+      "responseCodes": [
+        204,
+        400,
+        401,
+        403,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "INVALID_READ_CURSOR",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "v0.1 拟返回 200 含 unreadCount；后端为 204 无正文。",
+      "frontendContract": "【关键语义】读到历史位置并不一定把未读清零（未读数按实际剩余消息计算）。故本地乐观清零后必须等待 WS conversation.read 事件带回权威 unreadCount，不得自行假设归零。该事件会发给所有成员以及操作者自己的所有连接，其 unreadCount 是每个接收者自己的值。"
+    },
+    {
+      "id": "M1",
+      "method": "GET",
+      "path": "/api/v1/conversations/{conversationId}/messages",
+      "required": true,
+      "success": 200,
+      "summary": "历史分页或断线增量同步。items 恒为 seq 升序。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": {
+        "type": "object",
+        "required": [
+          "limit"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "beforeSeq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "严格小于此序号的较早消息（向上翻页）"
+          },
+          "afterSeq": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "严格大于此序号的消息（断线补偿），允许 0"
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/MessagePage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "INVALID_CURSOR",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "v0.1 拟 {items,hasMore,oldestSeq,latestSeq}；后端为 {items,hasMore,nextBeforeSeq,nextAfterSeq}。语义等价，前端已按后端字段名适配。",
+      "frontendContract": "【全清单最高优先级字段】afterSeq 是断线补偿 REST 兜底路径的唯一依赖，后端已实现。limit 在 openapi 中为 required，前端必须显式传。"
+    },
+    {
+      "id": "M2",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/messages",
+      "required": true,
+      "success": 201,
+      "summary": "发送文本或附件消息，以 clientMsgId 幂等重试。首次持久化返回 201 并广播；同用户同 clientMsgId 同会话同内容（含同一 attachmentId）重试返回 200 原消息且不再广播。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "clientMsgId"
+        ],
+        "properties": {
+          "clientMsgId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text"
+            ],
+            "description": "仅为向后兼容保留的老客户端字段；传了必须等于 text，服务端会忽略它并按 content/attachmentId 自行判定。附件消息不要传 type。"
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000,
+            "description": "纯文本消息必填且不能全是空白；附件消息可省略或传空串。"
+          },
+          "attachmentId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "先调 POST /api/v1/uploads 拿到的 id，必须属于发送者本人且未被任何消息引用。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Message"
+      },
+      "responseCodes": [
+        200,
+        201,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "CONVERSATION_NOT_FOUND",
+        "IDEMPOTENCY_CONFLICT",
+        "INVALID_ATTACHMENT",
+        "UPLOAD_IN_USE",
+        "MUTED",
+        "ACCOUNT_BANNED",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.1 拟 body {clientMsgId,type,body:{text}} 且统一 201；v0.2 为 {clientMsgId,type?,content?,attachmentId?} 且 200/201 双码。本轮上传扩展起 content 与 type 变为可选：只给 attachmentId 即可发送附件消息，消息 type 由服务端按上传物 kind 推导（image→image，其余→file），客户端传的 type 被忽略而不报错。content 与 attachmentId 都没有 → 400 VALIDATION_ERROR。 v0.3.0 起本端点还可返回 403 MUTED（禁言期）与 403 ACCOUNT_BANNED（账号被封）：两者都是「身份/权限」而非「输入」问题，前端应分别提示「禁言至 XX」与「账号已被封禁」，不要一律当成格式错误。",
+      "frontendContract": "【幂等纪律】(1) 重试必须复用原 clientMsgId 与原正文（附件消息即同一 attachmentId），绝不能每次重试生成新 id；(2) 同 id 换会话或换内容返回 409 IDEMPOTENCY_CONFLICT，属前端缺陷；(3) REST 返回与 WS message.created 可能先后交错，两条路径都必须经同一个 insertOrIgnore 去重；(4) 发送走 REST，不存在 WS 发消息 ack 帧；(5) 附件消息流程：先 POST /api/v1/uploads 拿 id，再发消息带 attachmentId；上传成功但发消息失败时附件成为孤儿，可重试发消息或调用 DELETE /api/v1/uploads/{id} 主动回收（已附着则 409 UPLOAD_IN_USE）；(6) 图片气泡渲染：带 Authorization 头 fetch attachment.url 拿 bytes → URL.createObjectURL(blob) → img.src，组件卸载时 revokeObjectURL；CSP 的 img-src 已放行 blob:。禁止直接把 attachment.url 填进 <img src>，那会 401。"
+    },
+    {
+      "id": "U4",
+      "method": "POST",
+      "path": "/api/v1/uploads",
+      "required": true,
+      "success": 201,
+      "summary": "上传单个文件。请求体是裸二进制（不做 multipart），Content-Type 被忽略，类型一律按魔数嗅探。",
+      "pathParams": [],
+      "query": [
+        {
+          "name": "filename",
+          "required": false,
+          "type": "string",
+          "maxLength": 255,
+          "description": "原始文件名，URL 编码后传；仅用于展示与下载时的 Content-Disposition，不参与磁盘路径拼接。省略时服务端填「未命名文件」。"
+        }
+      ],
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Upload"
+      },
+      "responseCodes": [
+        201,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UPLOAD_TOO_LARGE",
+        "UNSUPPORTED_MEDIA_TYPE",
+        "RATE_LIMITED"
+      ],
+      "diff": "新增端点。不用 multipart/form-data：裸 body 最省依赖也最省解析开销；文件名走 query 而非 Content-Disposition，避免二进制头解析。",
+      "frontendContract": "【上传纪律】(1) 用 axios/fetch 直接把 File 对象当 body 发，headers 只需 Authorization；不要手动设 Content-Type（设了也会被忽略）。(2) 大小上限 10 MiB（10485760 字节），超限返回 413 UPLOAD_TOO_LARGE；裸 body 传输层上限 11 MiB 也是 413，前端按同一分支处理。(3) 类型白名单靠魔数：png/jpeg/webp/gif/pdf/zip/纯文本；其他（如 exe、mp4）返回 415 UNSUPPORTED_MEDIA_TYPE，前端可在选文件时按扩展名预校验以减少无谓请求，但最终以后端判定为准。(4) filename 必须 encodeURIComponent，否则中文名会被截断或 400。(5) 201 返回的 sha256 可用于本地完整性校验；该值只在这一次响应里出现，消息内的 attachment 不含 sha256。(6) 节流 30 次/分/用户。"
+    },
+    {
+      "id": "U5",
+      "method": "GET",
+      "path": "/api/v1/uploads/{id}",
+      "required": true,
+      "success": null,
+      "summary": "下载上传物原始字节。属主可读；非属主仅在「该附件被某条消息引用且请求者是该会话成员」时可读。响应是二进制流而非 JSON，故 openapi 不为其声明 200 schema。",
+      "pathParams": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": null,
+      "responseCodes": [
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "UPLOAD_NOT_FOUND"
+      ],
+      "diff": "新增端点。成功响应刻意不写进 openapi 的 200（二进制无 JSON schema），因此 success 置空、response 置空；错误分支仍是标准 error 包装。v0.3.0 起把可读范围从「仅属主」放宽到「同会话成员」，修掉对方消息附件全部 403 的问题。",
+      "frontendContract": "【下载纪律】(1) 必须带 Authorization 头，<img src> / <a href> 直接指过去会 401；图片走 fetch → blob → URL.createObjectURL，其他文件走 blob 下载或预览。(2) 响应头已固定：Content-Type 取服务端嗅探值、X-Content-Type-Options: nosniff、Content-Security-Policy: default-src 'none'; sandbox、Referrer-Policy: no-referrer、Cache-Control: private, max-age=31536000, immutable、Content-Disposition 图片 inline，其余 attachment 并带 filename*=UTF-8''。(3) 可读范围：本人上传物恒可读；他人上传物只有当它被「我所在会话」的某条消息引用时才可读，否则 403 FORBIDDEN（比 404 更易排障，且 UUID 不可枚举）；已删除或磁盘文件缺失 404 UPLOAD_NOT_FOUND。"
+    },
+    {
+      "id": "U6",
+      "method": "DELETE",
+      "path": "/api/v1/uploads/{id}",
+      "required": true,
+      "success": 204,
+      "summary": "删除自己上传、且尚未被任何消息引用的上传物（含磁盘文件）。",
+      "pathParams": [
+        {
+          "name": "id",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": null,
+      "responseCodes": [
+        204,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "UPLOAD_NOT_FOUND",
+        "UPLOAD_IN_USE"
+      ],
+      "diff": "新增端点。用于「上传成功但消息没发出去」时的主动回收；已附着附件不允许删除（409），避免消息里出现坏链。",
+      "frontendContract": "发送失败或用户取消时调用本端点回收附件。已附着返回 409 UPLOAD_IN_USE —— 这不是错误而是「已经被消息用掉了」，前端静默忽略即可。删除成功返回 204 无正文。"
+    },
+    {
+      "id": "C9",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/members/{userId}/role",
+      "required": true,
+      "success": 200,
+      "summary": "群主设置或取消成员的管理员身份。只能设成 admin/member，群主身份不可通过本接口变更。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "userId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "member"
+            ]
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Conversation"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "CANNOT_CHANGE_OWNER_ROLE",
+        "OWNER_REQUIRED",
+        "GROUP_REQUIRED",
+        "MEMBER_NOT_FOUND",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "新增端点。v0.1 只有 owner/member 两种角色，本版增加 admin：管理员可以改群名/群头像、移除普通成员，但不能动群主或其他管理员。",
+      "frontendContract": "返回完整 Conversation（含 members 里每个人的权威 role），前端整体替换即可，不要本地猜角色。反复设置同一角色是幂等的，不会产生多余 system 消息。"
+    },
+    {
+      "id": "P1",
+      "method": "GET",
+      "path": "/api/v1/conversations/{conversationId}/pins",
+      "required": true,
+      "success": 200,
+      "summary": "获取会话置顶消息列表，按置顶时间倒序。成员即可读。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/PinnedMessagePage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "新增端点。置顶列表不分页：单会话最多 50 条，一次拉全。",
+      "frontendContract": "置顶条的顺序由后端给定（pinnedAt 倒序），前端不要自行按 seq 重排。收到 WS conversation.pins 时整体替换本列表。"
+    },
+    {
+      "id": "P2",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/pins",
+      "required": true,
+      "success": 201,
+      "summary": "置顶一条消息。成员即可（owner/admin/member 都能置顶）；重复置顶同一条消息幂等返回 200 原记录。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "msgId"
+        ],
+        "properties": {
+          "msgId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "要置顶的消息 UUID（不是 seq）。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/PinnedMessage"
+      },
+      "responseCodes": [
+        200,
+        201,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "INVALID_MESSAGE",
+        "PIN_LIMIT",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "新增端点。「消息不存在」与「消息存在但不属于本会话」合并为 400 INVALID_MESSAGE —— 用 404 会让 msgId 变成可探测凭据。",
+      "frontendContract": "首次置顶返回 201、幂等重放返回 200，两者响应体相同，前端不需要分支。msgId 用 message.msgId（UUID），不要用 seq。"
+    },
+    {
+      "id": "P3",
+      "method": "DELETE",
+      "path": "/api/v1/conversations/{conversationId}/pins/{msgId}",
+      "required": true,
+      "success": 204,
+      "summary": "取消置顶。成员即可；不存在返回 404 PIN_NOT_FOUND。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "msgId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": null,
+      "responseCodes": [
+        204,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "PIN_NOT_FOUND",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "新增端点。:msgId 是消息 UUID。成功 204 无正文。",
+      "frontendContract": "204 后前端必须等 WS conversation.pins 或本地移除该条；不要假设返回最新列表。"
+    },
+    {
+      "id": "D1",
+      "method": "GET",
+      "path": "/api/v1/admin/users",
+      "required": true,
+      "success": 200,
+      "summary": "管理员分页搜索用户，支持按 uid/账号名/昵称模糊匹配。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "required": [
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "query": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "模糊匹配 uid/username/displayName；省略=不过滤。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/AdminUserPage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "ADMIN_REQUIRED",
+        "VALIDATION_ERROR"
+      ],
+      "diff": "新增端点。非管理员一律 403 ADMIN_REQUIRED（不返回 404 隐藏接口存在性——管理后台本身就是公开能力）。",
+      "frontendContract": "offset 分页：nextOffset=null 表示末页。返回的 User 是完整对象（含 role/status/mutedUntil/online），前端不必再逐个拉详情。"
+    },
+    {
+      "id": "D2",
+      "method": "POST",
+      "path": "/api/v1/admin/users/{uid}/mute",
+      "required": true,
+      "success": 200,
+      "summary": "禁言或解除禁言。minutes=0 表示解除；不能禁言管理员。",
+      "pathParams": [
+        {
+          "name": "uid",
+          "required": true,
+          "type": "integer"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "minutes"
+        ],
+        "properties": {
+          "minutes": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 525600,
+            "description": "0=解除禁言；上限 525600（365 天），避免误填天文数字把账号永久封死。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/User"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "ADMIN_REQUIRED",
+        "USER_NOT_FOUND",
+        "CANNOT_MUTE_ADMIN"
+      ],
+      "diff": "新增端点。:uid 是数字 uid（不是 UUID）—— 管理员在后台看到并操作的就是 1001/10001 这种号码。禁言只影响发消息，不影响登录与读消息。",
+      "frontendContract": "返回被处理者的完整 User，用 mutedUntil 的权威值刷新列表，不要本地 now+minutes 自算。"
+    },
+    {
+      "id": "D3",
+      "method": "DELETE",
+      "path": "/api/v1/admin/users/{uid}",
+      "required": true,
+      "success": 204,
+      "summary": "删除账号：踢掉其全部 WS 连接、删除其发送的消息、处理群主转移与只剩 1 人的私聊。不能删除管理员。",
+      "pathParams": [
+        {
+          "name": "uid",
+          "required": true,
+          "type": "integer"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": null,
+      "responseCodes": [
+        204,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "ADMIN_REQUIRED",
+        "USER_NOT_FOUND",
+        "CANNOT_DELETE_ADMIN"
+      ],
+      "diff": "新增端点。不可逆：被删用户的消息一并删除（messages.sender_id 没有 ON DELETE 级联，必须先删消息再删用户）。",
+      "frontendContract": "204 后该用户的会话可能消失（私聊只剩 1 人会被删）或被转移（群主转移给最早加入的成员），前端应重新拉会话列表而不是增量修补。"
+    },
+    {
+      "id": "D4",
+      "method": "GET",
+      "path": "/api/v1/admin/stats",
+      "required": true,
+      "success": 200,
+      "summary": "管理后台概览统计：用户/会话/消息/上传物数量与在线用户数。",
+      "pathParams": [],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/AdminStats"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "ADMIN_REQUIRED"
+      ],
+      "diff": "新增端点。每个字段一条 SELECT COUNT(*)，不是物化统计表——MVP 数据量下足够快，也不会有计数漂移。",
+      "frontendContract": "online 是去重用户数（同一用户多端连接只算 1），不是连接数。"
+    },
+    {
+      "id": "S1",
+      "method": "POST",
+      "path": "/api/v1/sync",
+      "required": true,
+      "success": 200,
+      "summary": "批量增量同步。单次最多 100 会话，每会话最多 100 条消息。重复会话游标或未来 seq 返回 400；任一无权会话返回 404（整批失败）。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "cursors"
+        ],
+        "properties": {
+          "cursors": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "object",
+              "required": [
+                "conversationId",
+                "lastSeq"
+              ],
+              "properties": {
+                "conversationId": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "lastSeq": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          }
+        }
+      },
+      "response": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/definitions/SyncItem"
+            }
+          }
+        }
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        500
+      ],
+      "errorCodes": [
+        "INVALID_CURSOR",
+        "DUPLICATE_CURSOR",
+        "CONVERSATION_NOT_FOUND"
+      ],
+      "diff": "v0.1 拟 cursors ≤200；后端上限 100。前端按 100 分批。响应形状与前端 v0.1 提议一致（后端明确接受了该形状）。",
+      "frontendContract": "【关键】hasMore 为真时只推进到 nextSeq，禁止直接跳到 lastSeq（否则漏消息）。收到 404 应先刷新会话列表移除已退群项后重试。此端点不是持久化事件队列：断线期间的好友、成员、presence 事件必须通过 REST 当前状态校正，不能指望 sync 重放。sync 走 WS 的变体在本版被移除（后端无 conversation.sync 帧），前端补偿以本端点为主路径。"
+    }
+  ],
+  "deferredEndpoints": [
+    {
+      "id": "X1",
+      "method": "GET",
+      "path": "/api/v1/users/{userId}",
+      "status": "deferred",
+      "purpose": "用户资料卡（群成员点开、单聊对方资料页）",
+      "frontendFallback": "暂用 GET /users?q=<username> 精确匹配代替；群成员资料卡只展示成员列表已有字段。"
+    },
+    {
+      "id": "X2",
+      "method": "DELETE",
+      "path": "/api/v1/friends/{userId}",
+      "status": "deferred",
+      "purpose": "删除好友",
+      "frontendFallback": "隐藏该按钮，待端点上线后再显示。"
+    },
+    {
+      "id": "X3",
+      "method": "GET",
+      "path": "/api/v1/presence",
+      "status": "deferred",
+      "purpose": "批量在线状态预取",
+      "frontendFallback": "降级为使用列表内嵌的 User.online 快照；WS presence.changed 到达后增量更新。代价是首屏在线状态可能滞后，可接受。"
+    },
+    {
+      "id": "X4",
+      "method": "PATCH",
+      "path": "/api/v1/conversations/{conversationId}/transfer",
+      "status": "deferred",
+      "purpose": "群主转让 / 解散群",
+      "frontendFallback": "MVP 不做；群主退群返回 OWNER_CANNOT_LEAVE，前端禁用退群按钮并提示二期。"
+    }
+  ],
+  "serverRuntimeConstraints": {
+    "cors": {
+      "allowOrigin": "白名单精确匹配 http://localhost:5173（不可用 *）",
+      "allowMethods": "GET,POST,PATCH,DELETE,OPTIONS",
+      "allowHeaders": "Authorization,Content-Type",
+      "allowCredentials": false,
+      "maxAge": 600,
+      "exposeHeaders": "Retry-After",
+      "note": "开发期靠 Vite 代理消掉跨域（/api、/ws、/health 三条），CORS 只作直连备用；后端已实现 ORIGIN_FORBIDDEN。"
+    },
+    "wsOriginCheck": "服务端必须校验 Origin 头（WebSocket 不受 CORS 约束，这是 WS 的 CSRF 面）",
+    "csp": "default-src 'self'; connect-src 'self' ws: wss: —— 防 XSS 窃取 localStorage 中的 opaque token",
+    "rateLimits": {
+      "POST /api/v1/auth/register": "10 次/分/IP",
+      "POST /api/v1/auth/login": "10 次/分/IP",
+      "普通请求": "200 次/分/用户",
+      "POST .../messages": "60 次/分/用户",
+      "WS": "每连接 30 帧/10 秒；单帧 ≤4 KiB；积压 >1 MiB 断开；每用户最多 5 条连接"
+    },
+    "limits": {
+      "messageContent": 4000,
+      "displayName": 40,
+      "bio": 200,
+      "groupName": 60,
+      "groupMembers": 100,
+      "requestNote": 200,
+      "httpBody": "32 KiB"
+    }
+  }
+}

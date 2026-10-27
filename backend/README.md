@@ -79,11 +79,15 @@ npm start
 | `SESSION_TTL_DAYS` | `7` | 会话有效天数，范围 1–30 |
 | `LOG_LEVEL` | `info` | Fastify 日志级别 |
 | `TRUST_LOOPBACK_PROXY` | `false` | 仅部署在本机可信反向代理后方时设为 true；只信任 loopback 代理传来的客户端 IP |
-| `DEFAULT_FRIEND_USERNAME` | 空（关闭） | 新注册用户自动与该账号成为双向好友；账号须提前创建，公网部署为 QJQ |
+| `DEFAULT_FRIEND_USERNAME` | 空（关闭） | 新注册用户自动与该账号成为双向好友；推荐填 `qjq`（下面的预置普通用户），公网部署为 `QJQ` |
 | `REQUIRE_HTTPS` | `auto` | `true` 时拒绝明文凭据请求（反代终结 TLS 的部署必须显式设 true） |
 | `ADMIN_UID` | `1001` | 系统管理员固定 uid（1000..9999，普通用户从 10001 起） |
 | `ADMIN_USERNAME` | `root` | 管理员登录名（小写 3..32 位 `[a-z0-9_]`） |
 | `ADMIN_INITIAL_PASSWORD` | `12345678` | **仅首次创建**管理员时使用；已存在则完全不动，改环境变量不会重置线上密码 |
+| `SEED_USER_UID` | `10001` | 预置普通用户 uid（10001..999999；被占用时自动顺延到下一个空号） |
+| `SEED_USER_USERNAME` | `qjq` | 预置普通用户登录名（小写 3..32 位 `[a-z0-9_]`）；**显式置空即整体关闭该预置账号** |
+| `SEED_USER_DISPLAY_NAME` | `柒玖柒` | 预置普通用户昵称（1..40 字符） |
+| `SEED_USER_INITIAL_PASSWORD` | `A454545asd@` | **仅首次创建**预置普通用户时使用；已存在则完全不动 |
 | `RETENTION_SWEEP_SECONDS` | `30` | 过期数据清理间隔（秒），随心跳运行 |
 | `RETENTION_MESSAGE_DAYS` | `0` | 消息保留天数，`0` = 永不删除 |
 
@@ -96,7 +100,25 @@ npm start
 数据表：`users`、`sessions`、`friend_requests`、`friendships`、`conversations`、
 `conversation_members`、`messages`、`message_attachments`、`message_pins`、`uploads`、`ws_tickets`、
 `posts`、`post_attachments`、`post_likes`、`post_comments`。启用外键、WAL 与 5 秒 busy timeout，
-写操作使用显式事务。初次启动自动建表，不植入测试账号。**结构变更必须新增版本化迁移**，不能直接改已有建表语句。
+写操作使用显式事务。初次启动自动建表并引导出两个固定账号（见下），不止一个管理员。
+
+## 初始账号（两个）
+
+全新库首次启动会引导出两个账号，之后**只在账号不存在时创建一次**，已存在则密码与昵称一律不动：
+
+| 角色 | 登录名 | 昵称 | 初始密码 | uid |
+| --- | --- | --- | --- | --- |
+| 系统管理员 | `root` | 系统管理员 | `12345678`（`ADMIN_INITIAL_PASSWORD`） | 1001 |
+| 初始普通用户 | `qjq`（登录输入 `QJQ` 同样有效） | 柒玖柒 | `A454545asd@`（`SEED_USER_INITIAL_PASSWORD`） | 10001 |
+
+`bootstrap.ts` 的 `ensureAdmin()` 与 `ensureSeedUser()` 分别负责这两个账号，两者都在
+`registerRoutes` 之前执行 —— 顺序有硬性原因：`DEFAULT_FRIEND_USERNAME` 指向的账号若不存在，
+注册接口会 fail-closed 返回 503 `DEFAULT_FRIEND_UNAVAILABLE`，新库首启就会「一个用户都注册不了」。
+所以部署时 `DEFAULT_FRIEND_USERNAME` 应当与 `SEED_USER_USERNAME` 指向同一个账号（默认都是 `qjq`）。
+
+当前版本**没有改密码接口**，这两个密码只能在首次启动前通过环境变量决定。
+
+**结构变更必须新增版本化迁移**，不能直接改已有建表语句。
 
 迁移注意：v3→v4 的 `messages` 表重建必须在 `BEGIN IMMEDIATE` **之前**执行 `PRAGMA foreign_keys=OFF`
 （事务内的 pragma 是 no-op），旧 `attachment_id` 要在 DROP 之前搬进 `message_attachments`。
@@ -108,17 +130,19 @@ SQLite 数据包含聊天正文，不是端到端加密存储；日志不记录�
 ## 清库（恢复成干净但可登录的状态）
 
 ```powershell
-node scripts/reset-db.mjs --dry-run   # 只打印动作与各表计数
-node scripts/reset-db.mjs --confirm   # 真正执行
+node scripts/reset-db.mjs --confirm --dry-run   # 只打印动作与各表计数（--dry-run 也必须带 --confirm）
+node scripts/reset-db.mjs --confirm             # 真正执行
 ```
 
-清空全部业务数据后重建唯一管理员（`root` / `ADMIN_INITIAL_PASSWORD`）。必须显式 `--confirm`，
-否则只打印用法并 `exit 1`。纯 `node:` 内置模块，不依赖 `npm ci`；库路径默认由脚本自身位置推导。
-旧库（`user_version < 4`）会拒绝执行并要求先启动一次服务端完成迁移 —— 这是设计行为。
+清空全部业务数据后重建两个初始账号（`root` / `ADMIN_INITIAL_PASSWORD`，以及 `qjq` / `SEED_USER_INITIAL_PASSWORD`）。
+必须显式 `--confirm`，否则只打印用法并 `exit 1` —— `--dry-run` 同样必须带 `--confirm`，
+避免「看起来在预览、其实漏了 `--confirm`」被误读成「已经清过了」。纯 `node:` 内置模块，不依赖 `npm ci`；
+库路径默认由脚本自身位置推导（相对 `backend/`，不是 cwd）。旧库（`user_version < 4`）会拒绝执行并要求
+先启动一次服务端完成迁移 —— 这是设计行为。
 
 ## 验证与上线边界
 
-`npm test` 执行 TypeScript 构建和 Node test runner 集成测试（55 用例），覆盖认证与续期、参数校验、
+`npm test` 执行 TypeScript 构建和 Node test runner 集成测试（64 用例），覆盖认证与续期、参数校验、
 好友授权、群权限与管理员角色、幂等/序号、未读、游标与补偿、真实 WebSocket、票据/会话失效、
 CORS/限流、SQLite 重启恢复、schema 迁移（v1/v2 → v4）、多附件消息、撤回、引用回复、广场、访客资料。
 

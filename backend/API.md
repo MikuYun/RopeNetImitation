@@ -207,6 +207,19 @@
 
 部署可设置 `DEFAULT_FRIEND_USERNAME`（公网为 `QJQ`）。账号必须预先创建；新用户注册时，在同一事务内建立双向好友及 `accepted` 申请记录，无需人工通过，不自动发送消息。提交后向双方推送现有 `friend.resolved` 事件，好友列表与私聊接口沿用原协议。用户名仍统一小写存储，`QJQ` 与 `qjq` 均可登录。指定好友不存在时返回 503 / `DEFAULT_FRIEND_UNAVAILABLE`，不留下用户、会话或半条好友关系；已有指定账号重复注册仍返回 409，不会添加自己。留空配置关闭此规则。现有用户不自动回填。
 
+### 初始账号引导
+
+服务启动时在 `registerRoutes` 之前引导出两个固定账号，两者都是**只在账号不存在时创建一次，已存在则密码与昵称完全不动**（改环境变量不会重置线上密码）：
+
+| 角色 | 登录名 | 昵称 | 初始密码 | uid | 配置项 |
+|---|---|---|---|---|---|
+| 系统管理员 | `root` | 系统管理员 | `12345678` | 1001 | `ADMIN_*` |
+| 初始普通用户 | `qjq` | 柒玖柒 | `A454545asd@` | 10001 | `SEED_USER_*` |
+
+`ensureAdmin` 按 uid 与 username 双查；`ensureSeedUser` **只按 username（`COLLATE NOCASE`）认人**，uid 被占时顺延到下一个空号 —— 因为「注册默认好友」是按 username 找人的，认 uid 会让账号建不出来再导致注册 503。`SEED_USER_USERNAME` 显式置空可整体关闭预置普通用户。两者都必须在路由注册前完成，否则新库首启会出现「一个用户都注册不了」的死锁（`DEFAULT_FRIEND_USERNAME` 找不到账号 → 503）。
+
+当前版本**没有改密码接口**，这两个初始密码只能在**首次启动前**通过 `ADMIN_INITIAL_PASSWORD` / `SEED_USER_INITIAL_PASSWORD` 决定。`node scripts/reset-db.mjs --confirm` 会把库清空并重建这两个账号。
+
 ### 无请求体 POST 的调用注意事项
 
 `POST /auth/ws-ticket`、`POST /auth/session/refresh`、`POST /auth/logout` 不需要请求体。推荐只发送 `Authorization`，**不要设置 `Content-Type`，也不要传 `body: ''`**。

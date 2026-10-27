@@ -14,8 +14,9 @@
 | 2 | 点任意头像进访客资料页 | `views/UserProfileView.vue`、`components/message/MessageBubble.vue`（`emit('open-profile')`）、`views/MessagePane.vue`（`onOpenProfile` → `router.push`） | `e2e-v2` 气泡头像点击；`docs/evidence/v2-req2-visitor-profile.png` |
 | 3 | ≥5 预置主题 + 自定义 RGB（含聊天框、字体、背景） | `frontend/src/styles/theme.css`（7 套 × 31 变量）、`stores/ui.ts`、`components/theme/ThemePicker.vue` | `e2e-v2` 七套切换 + 自定义落盘 + 刷新保持；`docs/evidence/v2-req3-*.png` |
 | 4 | 多图多文件（≤9 图 + ≤1 视频）、图片必带文字、文字不被吞、有附件时 Enter 不发 | `components/message/MessageComposer.vue`、`AttachmentView.vue`（九宫格 + 视频 + 灯箱）、`MessageBubble.vue`、`utils/attachments.ts` | `e2e-v2` + `e2e-attachment` 38/38；`docs/evidence/v2-req4-*.png` |
-| 5 | 清库仅保留管理员 `root` / `12345678` | `backend/scripts/reset-db.mjs`、`backend/src/config.ts`（`ADMIN_USERNAME=root`、`ADMIN_INITIAL_PASSWORD=12345678`）、`backend/src/bootstrap.ts`（`ensureAdmin`） | 真实库副本端到端：清空 16 张业务表 → `users=1` → 重启 → `POST /auth/login` 200 |
+| 5 | 清库并只保留管理员 `root` / `12345678` | `backend/scripts/reset-db.mjs`、`backend/src/config.ts`（`ADMIN_USERNAME=root`、`ADMIN_INITIAL_PASSWORD=12345678`）、`backend/src/bootstrap.ts`（`ensureAdmin`） | 真实库副本端到端：清空 15 张业务表 → 重启 → `POST /auth/login` 200 |
 | 6 | 广场（帖子 / 图片 ≤9 / 视频 ≤1 / 文字 ≤5000） | 后端 `POST|GET /posts` 等 9 端点 + 4 张新表；前端 `views/SquareView.vue`、`components/square/*`、`stores/square.ts`、`api/posts.ts` | `e2e-v2` 发布/点赞/评论/超限拦截；`docs/evidence/v2-req6-*.png` |
+| 8 | 初始两个账号：`root` / `12345678`（管理员）+ `QJQ` / 柒玖柒 / `A454545asd@`（普通用户），此后新注册用户自动加 QJQ 为好友 | `backend/src/config.ts`（`loadSeedUser` + `SEED_USER_*`）、`backend/src/bootstrap.ts`（`ensureSeedUser`）、`backend/src/app.ts`（在 `registerRoutes` 之前接线）、`backend/scripts/reset-db.mjs`（清库后建两个账号）；自动加好友复用既有的 `DEFAULT_FRIEND_USERNAME` 注册逻辑 | `backend/test/seed-user.test.ts` 9 用例 + 隔离库端到端：首启建出 `root`/`qjq` → 两者登录均 200 → 注册新用户 201 且 `/friends` 双向各有 `qjq` → 无 pending 申请 |
 
 七套主题 id：`light` / `dark` / `ocean` / `forest` / `sakura` / `midnight` / `custom`
 （前两套沿用旧名以兼容既有 localStorage 与历史 e2e）。自定义主题存于
@@ -89,7 +90,7 @@ v1：仅上传者本人 / 同会话成员。v2 追加「广场帖子引用」与
 
 ```bash
 # 0) 停服务
-systemctl stop aitarance-chat.service
+systemctl stop aitrance-chat.service
 
 # 1) 备份（库 + 上传目录必须一起备份，否则会出现「库里有记录、磁盘没文件」）
 cp /var/lib/aitrance/chat.sqlite /root/aitrance-backups/chat-v1-$(date +%F-%H%M%S).sqlite
@@ -97,13 +98,13 @@ tar czf /root/aitrance-backups/uploads-v1-$(date +%F).tar.gz -C /var/lib/aitranc
 
 # 2) 放入新 release，切换 current
 
-# 3) 【需求 5 场景才做，会清空全部业务数据】清库并重建唯一管理员
+# 3) 【需求 5 场景才做，会清空全部业务数据】清库并重建两个初始账号
 cd /opt/aitrance/current/backend
-node scripts/reset-db.mjs --dry-run    # 先看会删什么、各表计数
-node scripts/reset-db.mjs --confirm    # 真正执行
+node scripts/reset-db.mjs --confirm --dry-run   # 先看会删什么、各表计数（--dry-run 也必须带 --confirm）
+node scripts/reset-db.mjs --confirm             # 真正执行
 
 # 4) 启动（首次启动会跑 SCHEMA 3→4 迁移）
-systemctl start aitarance-chat.service
+systemctl start aitrance-chat.service
 # 等 health 200 再宣布恢复；systemd active 不代表端口就绪
 curl -s http://127.0.0.1:3001/api/v1/health
 ```
@@ -120,6 +121,16 @@ curl -s http://127.0.0.1:3001/api/v1/health
 `ADMIN_INITIAL_PASSWORD` 默认 `12345678`。`ensureAdmin` 先按 uid、再按 username
 `COLLATE NOCASE` 查找，任一命中就把该行纠正成 `admin + adminUid`，**已存在则完全不动** ——
 即改环境变量不会重置已有管理员密码，且当前版本**没有改密码接口**。
+
+**初始普通用户**（需求 8）：`SEED_USER_UID=10001`、`SEED_USER_USERNAME=qjq`（登录输 `QJQ` 同样有效，
+按 `COLLATE NOCASE` 匹配）、`SEED_USER_DISPLAY_NAME=柒玖柒`、`SEED_USER_INITIAL_PASSWORD=A454545asd@`。
+`ensureSeedUser` 只按 **username** 认人（不按 uid —— 需求要的是「账号 qjq 存在且能当默认好友」，
+uid 被占时顺延到下一个空号），命中即完全不动；账号锚点与 `ensureAdmin` 的 uid 锚点不同，是刻意的。
+`SEED_USER_USERNAME` 显式置空即整体关闭该预置账号（测试与嵌入用法靠它保持「库里只有管理员」）。
+
+两个引导都在 `registerRoutes` **之前**执行：`DEFAULT_FRIEND_USERNAME` 指向的账号不存在时，
+注册接口会 fail-closed 返回 503 `DEFAULT_FRIEND_UNAVAILABLE`，新库首启就会「一个用户都注册不了」。
+所以 `DEFAULT_FRIEND_USERNAME` 应与 `SEED_USER_USERNAME` 指向同一账号（默认都是 `qjq`）。
 
 ---
 
@@ -163,9 +174,22 @@ curl -s http://127.0.0.1:3001/api/v1/health
 1. 副本 `user_version=1`、缺 `uid/role/status` 列 → 脚本刻意报错「users 表缺少列 uid, role, status，
    请先启动一次服务端」。**这是设计行为**：旧库必须先迁移到 v4 才能安全清库；
 2. 启动一次服务端 → 迁移到 v4，`ensureAdmin` 自动创建 root；
-3. `--dry-run` 打印 16 条 DELETE 与各表计数；
-4. `--confirm` 执行 → 全表归零、`users=1`、`admin` = `uid:1001 / root / 系统管理员`；
-5. 重启 → `POST /api/v1/auth/login {"username":"root","password":"12345678"}` → **200**。
+3. `--confirm --dry-run` 打印 16 条 DELETE 与各表计数（`--dry-run` 也必须带 `--confirm`）；
+4. `--confirm` 执行 → 全表归零，并重建两个初始账号（`root` 与 `qjq`，见需求 8）；
+5. 重启 → `POST /api/v1/auth/login {"username":"root","password":"12345678"}` → **200**；
+   `{"username":"QJQ","password":"A454545asd@"}` → **200**（`uid:10001`、`role:user`、昵称 `柒玖柒`）。
+
+### 4.4 需求 8 的端到端验证方式
+
+在 `backend/.data/` 下用**全新隔离库**（不碰生产库）：
+
+1. 首启服务端 → 日志两行 `admin bootstrap: created`、`seed user bootstrap: created`；
+2. `users` 表恰好两行：`1001/root/系统管理员/admin` 与 `10001/qjq/柒玖柒/user`；
+3. `root/12345678` → 200；`QJQ/A454545asd@` → 200（大写输入有效）；`10001/A454545asd@` → 200（数字 uid 登录）；
+4. 注册两个新用户 → 均 201，`uid` 从 10002 起分配（10001 被预置账号占用）；
+5. 新用户 `GET /api/v1/friends` → 恰好 `qjq`；`qjq` 侧 `GET /api/v1/friends` → 两个新用户；
+6. `GET /api/v1/friend-requests?status=pending` → 空（自动加好友走「已接受」，不产生待处理申请）；
+7. 重启 → 日志变 `admin bootstrap: exists` / `seed user bootstrap: exists`，两账号仍可登录（密码未被覆盖）。
 
 ---
 
@@ -182,11 +206,16 @@ curl -s http://127.0.0.1:3001/api/v1/health
    责任人仍未落地。
 6. **生产库里有真实数据**：`DEPLOYED.md` 记录线上已有用户 `QJQ`，且历史探针 `qja_probe` 未清理。
    执行 `reset-db.mjs` 会连真实用户一起删 —— **必须用户明确确认后才做**。
+7. **两个初始账号的默认密码是弱口令且无法通过接口修改**：`root/12345678`、`qjq/A454545asd@`。
+   当前版本没有改密码接口，`ensureAdmin`/`ensureSeedUser` 对已存在的账号也完全不动密码，
+   所以这两个密码**只能在首次启动前**用 `ADMIN_INITIAL_PASSWORD` / `SEED_USER_INITIAL_PASSWORD`
+   决定。公网部署前必须改这两个环境变量（或至少接受该风险）。
 
 ---
 
 ## 6. 本轮规模
 
+- 需求 8 增量：`backend/src/{config,bootstrap,app}.ts` + `backend/scripts/reset-db.mjs` + `backend/test/seed-user.test.ts`（9 用例）+ 17 处测试调用点关闭 seed + 两份 env 示例 + `backend/README.md` 与本文档。
 - 改动文件：`git status` 167 项（139 modified + 28 untracked）；`git diff --stat` = 139 files / 15286 insertions / 2647 deletions；
 - 前端源码 30179 行（最大 `MessagePane.vue` 1279、`MessageComposer.vue` 1230、`MessageBubble.vue` 1060、`AttachmentView.vue` 1018、`SquareView.vue` 980）；
 - 后端 `src/` 3776 行；

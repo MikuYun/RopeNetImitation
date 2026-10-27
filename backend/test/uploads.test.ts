@@ -25,7 +25,7 @@ const PNG = Buffer.from(
  */
 async function fixture(context: TestContext, prefix = 'aitrance-uploads-') {
   const uploadsDir = await mkdtemp(join(tmpdir(), prefix));
-  const backend = await buildApp({ databasePath: ':memory:', uploadsDir, logger: false });
+  const backend = await buildApp({ databasePath: ':memory:', uploadsDir, logger: false, seedUser: null });
   // after 钩子按注册顺序执行：先关 app 再删目录，避免关停过程中的清理写到已删除的目录。
   context.after(() => backend.app.close());
   context.after(() => rm(uploadsDir, { recursive: true, force: true }));
@@ -281,7 +281,7 @@ test('迁移：user_version 1 → 最新重建 messages 表且不丢数据', asy
   // rm 会抛 EBUSY。node:test 的 after 按注册顺序执行，所以清理放在本用例末尾注册。
 
   // 先用当前代码建库并写入一条真实消息，然后把 messages 表「降级」成 v1 形态（无 attachment_id、CHECK 不含 image/file）。
-  const first = await buildApp({ databasePath, uploadsDir, logger: false });
+  const first = await buildApp({ databasePath, uploadsDir, logger: false, seedUser: null });
   const alice = await register(first, 'alice');
   const bob = await register(first, 'bob');
   const conversationId = await direct(first, alice, bob);
@@ -321,7 +321,7 @@ test('迁移：user_version 1 → 最新重建 messages 表且不丢数据', asy
   legacy.close();
 
   // 重启：构造函数里的 migrate() 必须把表升级到最新版本，且原有消息完好。
-  const second = await buildApp({ databasePath, uploadsDir, logger: false });
+  const second = await buildApp({ databasePath, uploadsDir, logger: false, seedUser: null });
   context.after(() => second.app.close());
   assert.equal(Number((second.store.get<{ user_version: number }>('PRAGMA user_version')!).user_version), LATEST);
   const tableSql = second.store.get<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'")!.sql;
@@ -343,7 +343,7 @@ test('迁移：user_version 1 → 最新重建 messages 表且不丢数据', asy
   assert.equal(attached.json().type, 'image');
   // 再启动一次不会重复迁移（幂等）。
   await second.app.close();
-  const third = await buildApp({ databasePath, uploadsDir, logger: false });
+  const third = await buildApp({ databasePath, uploadsDir, logger: false, seedUser: null });
   context.after(() => third.app.close());
   assert.equal(Number((third.store.get<{ user_version: number }>('PRAGMA user_version')!).user_version), LATEST);
   context.after(() => rm(uploadsDir, { recursive: true, force: true }));
@@ -352,7 +352,7 @@ test('迁移：user_version 1 → 最新重建 messages 表且不丢数据', asy
 
 test('保留策略：sweep 只清理「无消息引用且已过期」的孤儿上传', async context => {
   const uploadsDir = await mkdtemp(join(tmpdir(), 'aitrance-uploads-'));
-  const backend = await buildApp({ databasePath: ':memory:', uploadsDir, logger: false, retentionMessageDays: 1 });
+  const backend = await buildApp({ databasePath: ':memory:', uploadsDir, logger: false, retentionMessageDays: 1, seedUser: null });
   context.after(() => backend.app.close());
   context.after(() => rm(uploadsDir, { recursive: true, force: true }));
   const alice = await register(backend, 'alice');

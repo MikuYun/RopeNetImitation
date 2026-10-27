@@ -14,7 +14,7 @@ import { Realtime } from './realtime.ts';
 import { ChatService } from './service.ts';
 import { registerRoutes } from './routes.ts';
 import { ensureUploadsDir } from './upload.ts';
-import { ensureAdmin } from './bootstrap.ts';
+import { ensureAdmin, ensureSeedUser } from './bootstrap.ts';
 
 /**
  * SEC-04 安全响应头。
@@ -143,6 +143,14 @@ export async function buildApp(overrides: Partial<Config> = {}) {
   // 否则首启进程在「管理员还没建」的窗口里会把管理员登录当成 401。
   const bootstrap = await ensureAdmin(store, config);
   app.log.info({ admin: bootstrap.admin, uid: config.adminUid }, `admin bootstrap: ${bootstrap.admin}`);
+  // 初始普通用户同样必须在 registerRoutes 之前：DEFAULT_FRIEND_USERNAME 指向的账号若不存在，
+  // 注册接口会 fail-closed 返 503，新库首启就会出现「一个用户都注册不了」的死锁。
+  // SEED_USER_USERNAME='' 时整体跳过（测试/嵌入用法）。
+  if (config.seedUser !== null) {
+    const seedBootstrap = await ensureSeedUser(store, config.seedUser);
+    app.log.info({ seedUser: seedBootstrap.seedUser, uid: config.seedUser.uid, username: seedBootstrap.username },
+      `seed user bootstrap: ${seedBootstrap.seedUser}`);
+  }
   app.decorateRequest('identity', null);
   app.setErrorHandler<FastifyError>((error, request, reply) => {
     const statusCode = error instanceof ApiError ? error.statusCode : error.statusCode ?? 500;

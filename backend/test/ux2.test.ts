@@ -42,6 +42,9 @@ async function fixture(context: TestContext) {
   const backend = await buildApp({
     databasePath: ':memory:', uploadsDir, logger: false,
     adminUid: 1001, adminInitialPassword: ADMIN_PASSWORD,
+    // 本文件断言「普通用户 uid 从 10001 起连续分配」，预置的初始普通用户会占掉 10001，
+    // 让编号整体后移一位。这里显式关掉它，保持测试原本想验证的分配规则。
+    seedUser: null,
   });
   // after 钩子按注册顺序执行：先关 app 再删目录，否则关停过程会写到已删除的目录（Windows 上表现为 EBUSY）。
   context.after(() => backend.app.close());
@@ -618,7 +621,7 @@ test('迁移：user_version 2 的库升到最新，补列回填且幂等不丢�
     VALUES (?, 1, ?, ?, ?, 'text', ?, ?)`).run(legacyMsgId, legacyGroupId, legacyUserId, legacyClientId, '迁移前的消息', created);
   legacy.close();
 
-  const upgraded = await buildApp({ databasePath, uploadsDir, logger: false, adminUid: 1001, adminInitialPassword: ADMIN_PASSWORD });
+  const upgraded = await buildApp({ databasePath, uploadsDir, logger: false, adminUid: 1001, adminInitialPassword: ADMIN_PASSWORD, seedUser: null });
   try {
     assert.equal(Number(upgraded.store.get<{ user_version: number }>('PRAGMA user_version')!.user_version), SCHEMA_VERSION);
     // uid 按注册时间从 10001 起回填；管理员（1001）由 bootstrap 单独创建，不占用普通号段。
@@ -650,7 +653,7 @@ test('迁移：user_version 2 的库升到最新，补列回填且幂等不丢�
   }
 
   // 再启动一次：迁移是纯 no-op，uid 不会被重新编号（幂等性证明）。
-  const again = await buildApp({ databasePath, uploadsDir, logger: false, adminUid: 1001, adminInitialPassword: ADMIN_PASSWORD });
+  const again = await buildApp({ databasePath, uploadsDir, logger: false, adminUid: 1001, adminInitialPassword: ADMIN_PASSWORD, seedUser: null });
   try {
     assert.equal(Number(again.store.get<{ user_version: number }>('PRAGMA user_version')!.user_version), SCHEMA_VERSION);
     assert.equal(again.store.get<{ uid: number }>('SELECT uid FROM users WHERE id = ?', legacyUserId)!.uid, 10001);

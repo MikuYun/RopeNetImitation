@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
- * reset-db.mjs —— 把数据库恢复成「干净但可登录」的初始状态：清空全部业务数据，只重建唯一管理员。
+ * reset-db.mjs —— 把数据库恢复成「干净但可登录」的初始状态：清空全部业务数据，重建两个初始账号
+ * （系统管理员 + 初始普通用户）。
  *
  * 用法（在 backend/ 下）：
  *   node scripts/reset-db.mjs --dry-run            # 只打印将执行的动作与各表计数，不写库
@@ -55,7 +56,9 @@ const UPLOAD_EXTENSIONS = new Set(['.png', '.jpg', '.webp', '.gif', '.pdf', '.zi
 
 const USAGE = `用法: node scripts/reset-db.mjs --confirm [选项]
 
-清空数据库里全部业务数据，只重建唯一管理员（uid=${process.env.ADMIN_UID ?? 1001} / ${process.env.ADMIN_USERNAME ?? 'root'}）。
+清空数据库里全部业务数据，重建两个初始账号：
+  管理员    uid=${process.env.ADMIN_UID ?? 1001} / ${process.env.ADMIN_USERNAME ?? 'root'}
+  普通用户  uid=${process.env.SEED_USER_UID ?? 10001} / ${process.env.SEED_USER_USERNAME ?? 'qjq'}
 
 选项:
   --confirm              必需。没有它脚本只打印用法并退出（退出码 1）。
@@ -65,7 +68,8 @@ const USAGE = `用法: node scripts/reset-db.mjs --confirm [选项]
   --no-uploads-cleanup   不清理孤儿上传文件（默认清理）。
   -h, --help             打印本帮助。
 
-环境变量（可选）: DATABASE_PATH、ADMIN_UID、ADMIN_USERNAME、ADMIN_INITIAL_PASSWORD。
+环境变量（可选）: DATABASE_PATH、ADMIN_UID、ADMIN_USERNAME、ADMIN_INITIAL_PASSWORD、
+                  SEED_USER_UID、SEED_USER_USERNAME、SEED_USER_DISPLAY_NAME、SEED_USER_INITIAL_PASSWORD。
 `;
 
 class UsageError extends Error {}
@@ -184,6 +188,30 @@ function resolveAdmin() {
   return { uid, username, password };
 }
 
+/**
+ * 初始普通用户（需求：新库首启就有 QJQ / 柒玖柒，让 DEFAULT_FRIEND_USERNAME 有真实账号可指）。
+ * 与 resolveAdmin 同一套校验口径，uid 下限 10001（普通用户号段起点）。
+ */
+function resolveSeedUser() {
+  const uid = Number(process.env.SEED_USER_UID ?? 10001);
+  if (!Number.isInteger(uid) || uid < 10001 || uid > 999999) {
+    fail(`SEED_USER_UID 必须是 10001..999999 之间的整数：${process.env.SEED_USER_UID}`);
+  }
+  const username = (process.env.SEED_USER_USERNAME ?? 'qjq').trim().toLowerCase();
+  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+    fail(`SEED_USER_USERNAME 必须是 3..32 位 [a-z0-9_]：${process.env.SEED_USER_USERNAME}`);
+  }
+  const displayName = (process.env.SEED_USER_DISPLAY_NAME ?? '柒玖柒').trim();
+  if (displayName.length < 1 || displayName.length > 40) {
+    fail('SEED_USER_DISPLAY_NAME 必须是 1..40 个字符');
+  }
+  const password = process.env.SEED_USER_INITIAL_PASSWORD ?? 'A454545asd@';
+  if (password.length < 8 || password.length > 128) {
+    fail('SEED_USER_INITIAL_PASSWORD 必须是 8..128 个字符');
+  }
+  return { uid, username, displayName, password };
+}
+
 function main() {
   let options;
   try {
@@ -210,8 +238,10 @@ function main() {
   }
 
   let admin;
+  let seedUser;
   try {
     admin = resolveAdmin();
+    seedUser = resolveSeedUser();
   } catch (error) {
     if (error instanceof UsageError) {
       console.error(`错误: ${error.message}`);
@@ -274,7 +304,9 @@ function main() {
       console.log('\n[dry-run] 将执行:');
       for (const table of present) console.log(`  DELETE FROM ${table}`);
       if (tables.has('sqlite_sequence')) console.log('  DELETE FROM sqlite_sequence');
-      console.log(`  INSERT INTO users 唯一管理员 uid=${admin.uid} username=${admin.username} role=admin`);
+      console.log(`  INSERT INTO users 管理员 uid=${admin.uid} username=${admin.username} role=admin`);
+      console.log(`  INSERT INTO users 初始普通用户 uid=${seedUser.uid} username=${seedUser.username}` +
+        ` display_name=${seedUser.displayName} role=user`);
       console.log(`  PRAGMA foreign_key_check + PRAGMA wal_checkpoint(TRUNCATE)`);
       if (options.cleanUploads) console.log(`  删除孤儿上传文件 ${orphans.length} 个（${uploadsDir}）`);
       for (const orphan of orphans.slice(0, 20)) console.log(`    - ${orphan.name}`);
@@ -284,6 +316,7 @@ function main() {
     }
 
     const passwordHash = hashPassword(admin.password);
+    const seedPasswordHash = hashPassword(seedUser.password);
     const now = new Date().toISOString();
 
     // 迁移期间显式关外键：清空顺序虽然已经是子表在前，但外键关掉才能保证
@@ -300,6 +333,12 @@ function main() {
         `INSERT INTO users(id, uid, username, display_name, avatar_url, bio, password_hash, role, status, created_at)
          VALUES (?, ?, ?, ?, '', '', ?, 'admin', 'active', ?)`,
       ).run(randomUUID(), admin.uid, admin.username, '系统管理员', passwordHash, now);
+      // 初始普通用户与管理员同时创建：两者都不存在时才建，清库后必然都不存在。
+      // 这样 DEFAULT_FRIEND_USERNAME 指向的账号立刻可用，新用户注册时不会被 fail-closed 挡回 503。
+      db.prepare(
+        `INSERT INTO users(id, uid, username, display_name, avatar_url, bio, password_hash, role, status, created_at)
+         VALUES (?, ?, ?, ?, '', '', ?, 'user', 'active', ?)`,
+      ).run(randomUUID(), seedUser.uid, seedUser.username, seedUser.displayName, seedPasswordHash, now);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');
@@ -335,13 +374,14 @@ function main() {
       console.log(`\n孤儿上传文件: 发现 ${orphans.length} 个，删除 ${removed} 个，失败 ${failedFiles} 个（${uploadsDir}）`);
     }
 
-    const adminRow = db.prepare('SELECT uid, username, display_name, role, status, created_at FROM users');
-    console.log('\n最终管理员:');
+    const adminRow = db.prepare('SELECT uid, username, display_name, role, status, created_at FROM users ORDER BY uid');
+    console.log('\n最终账号:');
     for (const row of adminRow.all()) {
       console.log(`  uid=${row.uid} username=${row.username} display_name=${row.display_name} ` +
         `role=${row.role} status=${row.status} created_at=${row.created_at}`);
     }
-    console.log(`\n重置完成。用 ${admin.username} / ADMIN_INITIAL_PASSWORD（默认 12345678）登录，并尽快改密码。`);
+    console.log(`\n重置完成。用 ${admin.username} / ADMIN_INITIAL_PASSWORD（默认 12345678）登录管理员，` +
+      `用 ${seedUser.username} / SEED_USER_INITIAL_PASSWORD（默认 A454545asd@）登录初始普通用户，并尽快改密码。`);
     if (violations.length > 0) process.exitCode = 1;
   } finally {
     db.close();

@@ -21,7 +21,7 @@ type Context = Awaited<ReturnType<typeof buildApp>>;
 interface Account { token: string; user: { id: string; username: string }; expiresAt: string }
 
 async function fixture(context: TestContext, overrides: Parameters<typeof buildApp>[0] = {}) {
-  const backend = await buildApp({ databasePath: ':memory:', logger: false, ...overrides });
+  const backend = await buildApp({ databasePath: ':memory:', logger: false, seedUser: null, ...overrides });
   context.after(() => backend.app.close());
   return backend;
 }
@@ -290,14 +290,14 @@ test('startup sweep happens inside buildApp so restarts converge expired state',
   const directory = await mkdtemp(resolve(tmpdir(), 'aitrance-retention-'));
   const databasePath = join(directory, 'chat.sqlite');
   try {
-    const first = await buildApp({ databasePath, logger: false });
+    const first = await buildApp({ databasePath, logger: false, seedUser: null });
     const user = await register(first, 'restartuser');
     first.store.run('INSERT INTO sessions(token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)',
       'stale-session', user.user.id, '2000-01-01T00:00:00.000Z', '1999-12-01T00:00:00.000Z');
     first.store.run('INSERT INTO ws_tickets(ticket_hash, session_hash, expires_at) VALUES (?, ?, ?)',
       'stale-ticket', 'stale-session', '2000-01-01T00:00:00.000Z');
     await first.app.close();
-    const second = await buildApp({ databasePath, logger: false });
+    const second = await buildApp({ databasePath, logger: false, seedUser: null });
     try {
       assert.equal(second.store.get('SELECT 1 FROM sessions WHERE token_hash = ?', 'stale-session'), undefined);
       assert.equal(second.store.get('SELECT 1 FROM ws_tickets WHERE ticket_hash = ?', 'stale-ticket'), undefined);

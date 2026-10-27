@@ -30,7 +30,7 @@ const MP4 = Buffer.from([
  */
 async function fixture(context: TestContext) {
   const uploadsDir = await mkdtemp(join(tmpdir(), 'aitrance-v2-'));
-  const backend = await buildApp({ databasePath: ':memory:', uploadsDir, logger: false });
+  const backend = await buildApp({ databasePath: ':memory:', uploadsDir, logger: false, seedUser: null });
   context.after(() => backend.app.close());
   context.after(() => rm(uploadsDir, { recursive: true, force: true }));
   return { backend, uploadsDir };

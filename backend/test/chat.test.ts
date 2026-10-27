@@ -12,7 +12,7 @@ type Context = Awaited<ReturnType<typeof buildApp>>;
 interface Account { token: string; user: { id: string; username: string }; expiresAt: string }
 
 async function fixture(context: TestContext) {
-  const backend = await buildApp({ databasePath: ':memory:', logger: false });
+  const backend = await buildApp({ databasePath: ':memory:', logger: false, seedUser: null });
   context.after(() => backend.app.close());
   return backend;
 }
@@ -298,7 +298,7 @@ test('proxy-aware login limiting trusts loopback only and is disabled by default
     { trustLoopbackProxy: true, remoteAddress: '127.0.0.1', independent: true },
     { trustLoopbackProxy: true, remoteAddress: '198.51.100.50', independent: false },
   ]) {
-    const backend = await buildApp({ databasePath: ':memory:', logger: false, trustLoopbackProxy: scenario.trustLoopbackProxy });
+    const backend = await buildApp({ databasePath: ':memory:', logger: false, trustLoopbackProxy: scenario.trustLoopbackProxy, seedUser: null });
     context.after(() => backend.app.close());
     const attempt = (forwardedFor: string) => backend.app.inject({ method: 'POST', url: '/api/v1/auth/login',
       remoteAddress: scenario.remoteAddress, headers: { 'x-forwarded-for': forwardedFor },
@@ -386,7 +386,7 @@ test('SQLite survives process-equivalent restart with sessions and messages', as
     await rm(resolved, { recursive: true, force: true });
   });
   const databasePath = join(directory, 'chat.sqlite');
-  const original = await buildApp({ databasePath, logger: false });
+  const original = await buildApp({ databasePath, logger: false, seedUser: null });
   let token: string;
   let conversationId: string;
   try {
@@ -396,7 +396,7 @@ test('SQLite survives process-equivalent restart with sessions and messages', as
     conversationId = await direct(original, alice, bob);
     original.service.sendMessage(conversationId, alice.user.id, randomUUID(), '重启仍存在');
   } finally { await original.app.close(); }
-  const reopened = await buildApp({ databasePath, logger: false });
+  const reopened = await buildApp({ databasePath, logger: false, seedUser: null });
   try {
     const messages = await call(reopened, 'GET', `/api/v1/conversations/${conversationId}/messages`, token);
     assert.equal(messages.statusCode, 200);

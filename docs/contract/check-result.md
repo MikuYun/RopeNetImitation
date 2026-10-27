@@ -2,7 +2,7 @@
 
 > 本文件由 `scripts/check-contract.mjs` 自动生成，请勿手工编辑。
 
-- 生成时间：2026-10-27T09:42:55.783Z
+- 生成时间：2026-10-27T10:43:53.933Z
 - openapi 版本：`0.3.0`
 - 命令：`node scripts/check-contract.mjs`
 

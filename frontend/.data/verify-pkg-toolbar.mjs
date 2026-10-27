@@ -41,8 +41,8 @@ const MIME = {
 // 与 backend/deploy/nginx-chat.conf 的 /chat/ location 逐字一致
 const CSP =
   "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; " +
-  "object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
-  "font-src 'self'; connect-src 'self' ws: wss:";
+  "object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; " +
+  "media-src 'self' blob:; font-src 'self'; connect-src 'self' ws: wss:";
 const PERMISSIONS =
   'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()';
 
@@ -166,6 +166,7 @@ try {
   check('首页引用 /chat/assets/ 前缀资源', !!scriptRef, scriptRef);
   const csp = homeRes.headers.get('content-security-policy') ?? '';
   check('生产 CSP 已下发且 img-src 含 blob:', csp.includes("img-src 'self' data: blob:"), `${csp.length} 字节`);
+  check('生产 CSP 含 media-src（v2 视频必需）', csp.includes("media-src 'self' blob:"));
   check('X-Frame-Options: DENY', homeRes.headers.get('x-frame-options') === 'DENY');
   const jsRes = await fetch(`${BASE}${scriptRef}`);
   check('JS 资源 MIME 不是 text/html', (jsRes.headers.get('content-type') ?? '').includes('javascript'), jsRes.headers.get('content-type') ?? '');

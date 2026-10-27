@@ -98,3 +98,85 @@ export async function ensureAdmin(store: Store, options: BootstrapOptions): Prom
   });
   return { admin: created ? 'created' : 'exists', username: options.adminUsername };
 }
+
+/** 初始普通用户的引导配置面。与 BootstrapOptions 分开，便于测试只传需要的那几项。 */
+export interface SeedUserOptions {
+  uid: number;
+  /** 登录名（默认 qjq），按 username COLLATE NOCASE 匹配，大小写不敏感。 */
+  username: string;
+  displayName: string;
+  initialPassword: string;
+}
+
+export interface SeedUserReport {
+  /** created = 本次新建；exists = 库里已有该 uid 或 username，本次未新建。 */
+  seedUser: 'created' | 'exists';
+  /** exists 时真正命中的登录名，便于启动日志说明。 */
+  username: string;
+}
+
+interface SeedRow {
+  id: string;
+  uid: number | null;
+  username: string;
+  role: string;
+}
+
+/**
+ * 找出「初始普通用户候选行」。
+ *
+ * 与 adminCandidates 的关键差别：管理员靠 uid 认人（1001 一定是管理员），
+ * 预置普通用户靠 **username** 认人 —— 需求要的是「账号 QJQ 存在且新注册用户能加它为好友」，
+ * 而默认好友是按 username 查的。如果 uid 被别的账号占了就当成「已存在」，
+ * 会让 qjq 永远建不出来，DEFAULT_FRIEND_USERNAME 直接 fail-closed 503，整站注册全废。
+ * 所以这里只按 username（大小写不敏感）匹配，uid 交给分配逻辑处理。
+ */
+function seedCandidates(store: Store, options: SeedUserOptions): SeedRow[] {
+  const row = store.get<SeedRow>('SELECT id, uid, username, role FROM users WHERE username = ? COLLATE NOCASE',
+    options.username);
+  return row ? [row] : [];
+}
+
+/** 普通用户对外编号段：10001 起。被占用时往后找第一个空号，避免「按 uid 登录进错账号」。 */
+function nextSeedUid(store: Store, preferred: number): number {
+  const taken = store.get<{ id: string }>('SELECT id FROM users WHERE uid = ?', preferred);
+  if (taken === undefined) return preferred;
+  const max = store.get<{ value: number | null }>(
+    'SELECT MAX(uid) AS value FROM users WHERE uid >= 10001')!;
+  return Math.max(preferred, (max.value ?? preferred) + 1);
+}
+
+/**
+ * 初始普通用户初始化（需求：新库首启就存在 QJQ / 柒玖柒，让 DEFAULT_FRIEND_USERNAME 有真实账号可指）。
+ *
+ * 幂等且「只写一次」：命中 uid 或 username 就不新建，密码、昵称、role 一律不动。
+ * 唯一可能写入的是「uid 为空时补上 seedUserUid」——那是迁移中途异常库的兜底，
+ * 且只在 seedUserUid 当前确实空闲时执行，不去抢别人的对外编号。
+ */
+export async function ensureSeedUser(store: Store, options: SeedUserOptions): Promise<SeedUserReport> {
+  const existing = seedCandidates(store, options);
+  if (existing.length > 0) {
+    const row = existing[0]!;
+    // 命中即「已存在」，密码/昵称/role 一律不动。唯一兜底：uid 为空时补号（迁移中途异常库）。
+    if (row.uid === null) {
+      store.transaction(() => {
+        const again = seedCandidates(store, options)[0];
+        if (again === undefined || again.uid !== null) return;
+        store.run('UPDATE users SET uid = ? WHERE id = ?', nextSeedUid(store, options.uid), again.id);
+      });
+    }
+    return { seedUser: 'exists', username: row.username };
+  }
+
+  // 与 ensureAdmin 同样：先算 scrypt 再进事务，避免长时间持有写锁；事务内二次复查覆盖并发首启。
+  const passwordHash = await hashPassword(options.initialPassword);
+  const created = store.transaction(() => {
+    if (seedCandidates(store, options).length > 0) return false;
+    const now = new Date().toISOString();
+    store.run(`INSERT INTO users(id, uid, username, display_name, password_hash, role, status, created_at)
+      VALUES (?, ?, ?, ?, ?, 'user', 'active', ?)`,
+    randomUUID(), nextSeedUid(store, options.uid), options.username, options.displayName, passwordHash, now);
+    return true;
+  });
+  return { seedUser: created ? 'created' : 'exists', username: options.username };
+}

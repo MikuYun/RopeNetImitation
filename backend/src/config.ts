@@ -60,6 +60,24 @@ export interface Config {
    * 之后重启一律不再读写它 —— 否则运维改过的密码会在每次重启时被这个环境变量覆盖回去。
    */
   adminInitialPassword: string;
+  /**
+   * 预置的「初始普通用户」。默认 QJQ / 柒玖柒。
+   * 与 adminUid 同一套引导语义：只在库里不存在时创建，已存在则密码/昵称一律不动。
+   * 为什么需要它：DEFAULT_FRIEND_USERNAME 指向的账号若不存在，注册接口会 fail-closed
+   * 直接 503，新库首次部署就会出现「一个用户都注册不了」的死锁。
+   * 置 SEED_USER_USERNAME='' 可整体关闭（测试与嵌入用法用得到）。
+   */
+  seedUser: SeedUserConfig | null;
+}
+
+export interface SeedUserConfig {
+  uid: number;
+  /** 登录名（小写、3..32 位 [a-z0-9_]）。 */
+  username: string;
+  /** 昵称，只在首次创建时写入。 */
+  displayName: string;
+  /** 初始密码，只在首次创建时使用一次。 */
+  initialPassword: string;
 }
 
 function positiveInteger(value: string | undefined, fallback: number, maximum: number): number {
@@ -107,6 +125,31 @@ export function loadTls(env: NodeJS.ProcessEnv = process.env): TlsPaths | null {
   return paths;
 }
 
+export function loadSeedUser(env: NodeJS.ProcessEnv = process.env): SeedUserConfig | null {
+  const rawUsername = env.SEED_USER_USERNAME;
+  // 显式置空 = 关闭预置账号。测试与嵌入用法靠它保持「库里只有管理员」的旧假设。
+  if (rawUsername !== undefined && rawUsername.trim() === '') return null;
+  const username = (rawUsername ?? 'qjq').trim().toLowerCase();
+  if (!/^[a-z0-9_]{3,32}$/.test(username)) {
+    throw new Error('SEED_USER_USERNAME must be empty or 3..32 characters of [a-z0-9_]');
+  }
+  const rawUid = env.SEED_USER_UID;
+  const uid = rawUid === undefined ? 10001 : Number(rawUid);
+  if (!Number.isInteger(uid) || uid < 10001 || uid > 999999) {
+    throw new Error(`SEED_USER_UID must be an integer between 10001 and 999999: ${rawUid}`);
+  }
+  const rawDisplayName = env.SEED_USER_DISPLAY_NAME;
+  const displayName = (rawDisplayName ?? '柒玖柒').trim();
+  if (displayName.length < 1 || displayName.length > 40) {
+    throw new Error('SEED_USER_DISPLAY_NAME must be 1..40 characters');
+  }
+  const initialPassword = env.SEED_USER_INITIAL_PASSWORD ?? 'A454545asd@';
+  if (initialPassword.length < 8 || initialPassword.length > 128) {
+    throw new Error('SEED_USER_INITIAL_PASSWORD must be 8..128 characters');
+  }
+  return { uid, username, displayName, initialPassword };
+}
+
 export function loadConfig(): Config {
   const defaultFriendUsername = (process.env.DEFAULT_FRIEND_USERNAME ?? '').trim().toLowerCase();
   if (defaultFriendUsername && !/^[a-z0-9_]{3,32}$/.test(defaultFriendUsername)) {
@@ -145,6 +188,10 @@ export function loadConfig(): Config {
   if (adminInitialPassword.length < 8 || adminInitialPassword.length > 128) {
     throw new Error('ADMIN_INITIAL_PASSWORD must be 8..128 characters');
   }
+  // 预置的初始普通用户（默认 QJQ / 柒玖柒）。与 admin 同一套「只创建一次」语义，
+  // 目的是让 DEFAULT_FRIEND_USERNAME 在新库首启时一定有个真实账号可指向。
+  // 空串 = 整体关闭（测试/嵌入用法用它来保持「库里只有管理员」的旧假设）。
+  const seedUser = loadSeedUser();
   const tls = loadTls();
   const databasePath = resolve(process.env.DATABASE_PATH ?? '.data/chat.sqlite');
   // UPLOADS_DIR 未配置时跟着库文件走：<数据库所在目录>/uploads。
@@ -173,5 +220,6 @@ export function loadConfig(): Config {
     adminUid,
     adminUsername,
     adminInitialPassword,
+    seedUser,
   };
 }

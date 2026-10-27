@@ -1,7 +1,7 @@
 /**
  * 后端真实响应形状（wire 类型）。
  *
- * 来源：backend/openapi.json **v0.2.0**（2026-09-28）+ backend/API.md。
+ * 来源：docs/v2/API-V2.md（API 0.3.0，protocolVersion = 2）+ backend/openapi.json。
  * 契约基准与差异见 docs/contract/diff-report.md。
  *
  * 纪律：wire 类型只在本文件与 normalize.ts 出现。业务层与组件一律使用
@@ -37,7 +37,8 @@ export interface WireAttachment {
   name: string
   mimeType: string
   size: number
-  kind: 'image' | 'file'
+  /** v2 新增 `video`（mp4/webm，上限 100 MiB）。 */
+  kind: 'image' | 'video' | 'file'
   url: string
   createdAt: string
 }
@@ -53,11 +54,35 @@ export interface WireMessage {
    */
   clientMsgId?: string | null
   seq: number
-  type: 'text' | 'system' | 'image' | 'file'
+  /** v2 扩展了 `video` / `mixed`，服务端按附件组合推导。 */
+  type: 'text' | 'system' | 'image' | 'video' | 'file' | 'mixed'
   content: string
-  /** 附件消息才有；`system` 恒为 null。旧后端可能不带该字段。 */
+  /**
+   * 附件集合（v2）。恒存在；无附件是 `[]`。
+   *
+   * 这里写成可选，是为了让归一化层能收「旧后端 / 灰度帧」——
+   * 任何业务代码读之前必须过 `normalize.toWireMessage`，那里会把缺失补成 `[]`。
+   * 领域模型 `types/domain.ts#WireMessage.attachments` 是必填的。
+   */
+  attachments?: WireAttachment[] | null
+  /**
+   * 旧 v1 单数字段，**deprecated**：只用于兼容灰度后端，新代码不得读取。
+   * 归一化层在 `attachments` 缺失时会把它包成单元素数组。
+   */
   attachment?: WireAttachment | null
+  /** 是否已撤回（v2）。撤回后 content=''、attachments=[]。 */
+  recalled?: boolean
+  recalledAt?: string | null
+  replyTo?: WireReplyRef | null
   createdAt: string
+}
+
+/** 引用回复的快照（v2）。 */
+export interface WireReplyRef {
+  msgId: string
+  senderId: string
+  senderName: string
+  preview: string
 }
 
 /**
@@ -193,6 +218,66 @@ export interface WireHealth {
   version: string
   protocolVersion: string
   serverTime: string
+}
+
+/**
+ * 广场帖子（v2 新增）。
+ *
+ * 也定义在这里、而不是只由 fe-square 自己声明：Wire 层的职责是「后端真实形状」，
+ * 广场与消息共用同一套 `WireAttachment` / `WireUser`。fe-square 再派生自己的
+ * 领域模型即可，避免同一个后端形状在两处各写一份、改一处漏一处。
+ */
+export interface WirePost {
+  id: string
+  /** 完整 User（含 uid/avatarUrl/role）。 */
+  author: WireUser
+  /** 0..5000 字；允许空串（纯附件帖）。 */
+  content: string
+  /** ≤9 且 video ≤1；`file` 类附件不允许进广场（服务端 400 ATTACHMENT_LIMIT）。 */
+  attachments: WireAttachment[]
+  likeCount: number
+  commentCount: number
+  likedByMe: boolean
+  mine: boolean
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WirePostComment {
+  id: string
+  postId: string
+  author: WireUser
+  /** 1..1000 字。 */
+  content: string
+  replyToId: string | null
+  replyToAuthorName: string | null
+  createdAt: string
+}
+
+/**
+ * `GET /api/v1/users/:userId` 的响应（v2 访客资料页）。
+ *
+ * `relationship` 由服务端给出（不再由前端从好友列表推导）；`conversationId`
+ * 是「和 TA 的单聊」的 id，没有则为 `null`。
+ */
+export interface WireUserProfileView {
+  user: WireUser
+  relationship: 'none' | 'friend' | 'request_sent' | 'request_received' | 'self'
+  conversationId: string | null
+  postCount: number
+  friendCount: number
+}
+
+/** 广场帖子列表分页（v2 统一 `{items,nextCursor}`）。 */
+export interface WirePostPage {
+  items: WirePost[]
+  nextCursor: string | null
+}
+
+/** 广场评论列表分页。 */
+export interface WirePostCommentPage {
+  items: WirePostComment[]
+  nextCursor: string | null
 }
 
 export interface WireApiError {

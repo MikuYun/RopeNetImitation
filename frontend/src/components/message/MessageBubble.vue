@@ -31,15 +31,44 @@
  *     永远不覆盖正文；纯 opacity 控制显隐，不产生布局跳动。
  *   - 手机（<= 767px）：**彻底不悬浮**。`.bubble__tools` 直接 `display: none`，
  *     改为**长按气泡**（500ms）弹出操作菜单（复用 AppModal，手机自动变底部
- *     抽屉）。菜单项：复制 / 看源码 / 置顶 / 下载附件。
+ *     抽屉）。菜单项：复制 / 回复 / 看源码 / 置顶 / 下载附件 / 撤回。
+ *
+ * ─────────────────────────────────────────────────────────────────────
+ * 【v2 契约（API 0.3.0）：一条消息可以有多个附件、可以被撤回、可以引用回复】
+ *
+ *   message.attachments: Attachment[]   —— 恒存在，无附件是 []
+ *   message.recalled: boolean           —— true 时正文/附件都不再渲染
+ *   message.replyTo: ReplyRef | null    —— 引用条，点击回到原消息
+ *
+ * 三个必须讲清楚的实现决定：
+ *
+ * 1) `recalled` 走的是「系统提示」形态，而不是把气泡灰掉。
+ *    服务端在撤回后把 content 清空、attachments 清空，本地缓存里若还留着旧
+ *    正文（撤回前渲染过的节点），只要继续走气泡分支就一定会把被撤回的内容
+ *    画出来 —— 那是**真泄露**。所以 recalled 分支必须是「整段不渲染正文与
+ *    附件」的另一个形态，而不是在气泡上加个灰滤镜。
+ *
+ * 2) 附件与正文**同时**渲染，不做互斥。
+ *    v2 规定「带附件必须带非空 content」，所以图片/文件消息天然同时有图和字；
+ *    `type` 只是服务端推导出来的分类标签，不是渲染分支依据。若按 type 互斥
+ *    渲染，用户配的文字会凭空消失。
+ *
+ *    但 `.bubble--attach` 这个类名必须继续挂在所有带附件的消息上：
+ *    `e2e-attachment.mjs` 靠 `.bubble--attach` 定位「带附件的消息」。
+ *    所以「类和文案分支」解耦：类照挂，内边距用 `.bubble--attach-text` 收紧。
+ *
+ * 3) 引用条是个 `<button>`，不是装饰性 div。
+ *    点击它要跳回原消息，键盘用户必须能 Tab 到并回车触发；用 div + @click
+ *    等于对键盘用户隐藏该功能。同理 aria-label 里带上被引用者名字。
  *
  * 保留全部既有类名（`.sys`、`.line`、`.line--mine`、`.line--peer`、
  * `.line__avatar`、`.line__col`、`.line__sender`、`.bubble`、`.bubble--mine`、
- * `.bubble--peer`、`.bubble__text`、`.bubble__att`、`.line__meta`、
- * `.line__time`）—— e2e 依赖它们，一个都不能删。
+ * `.bubble--peer`、`.bubble--attach`、`.bubble__text`、`.bubble__att`、
+ * `.line__meta`、`.line__time`）—— e2e 依赖它们，一个都不能删。
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import AppAvatar from '@/components/base/AppAvatar.vue'
+import AppIcon from '@/components/base/AppIcon.vue'
 import AppModal from '@/components/base/AppModal.vue'
 import AttachmentView from '@/components/message/AttachmentView.vue'
 import MarkdownView from '@/components/message/MarkdownView.vue'
@@ -50,6 +79,7 @@ import { hasMarkdownSyntax } from '@/utils/markdown'
 import { downloadAttachment } from '@/api/uploads'
 import {
   LONG_PRESS_MS,
+  canRecallMessage,
   createLongPress,
   messageMenuItems,
   shouldOpenMessageMenu,
@@ -63,6 +93,11 @@ const props = defineProps<{
   convType: ConversationType
   senderName?: string
   senderId?: string
+  /**
+   * 发送者头像地址（需求 1 的配套修复：气泡旁的头像也必须显示真实头像）。
+   * 留空则 AppAvatar 回退到「首字母 + 派生底色」，不会出现破图。
+   */
+  senderAvatar?: string
   /** 单聊对方是否已读到这条。 */
   readByPeer?: boolean
   /** 群聊已读人数（不含自己）；0 表示不显示。 */
@@ -76,6 +111,19 @@ const emit = defineEmits<{
   pin: [msgId: string]
   /** 请求取消置顶（参数是消息 UUID）。 */
   unpin: [msgId: string]
+  /** 点击引用条，请求滚动定位到被引用的消息（参数是消息 UUID）。 */
+  'jump-to': [msgId: string]
+  /** 请求引用回复这条消息（参数是消息 UUID）。 */
+  reply: [msgId: string]
+  /** 请求撤回这条消息（参数是消息 UUID）。 */
+  recall: [msgId: string]
+  /**
+   * 点击对方头像 → 打开访客资料页（需求 2）。
+   * 参数是被点击消息的发送者 id；上层负责 `router.push({name:'user-profile'})`。
+   * 「自己的头像」也走同一事件 —— 由上层判断等于自己时进「我的资料」，
+   * 组件不重复实现这层身份判定。
+   */
+  'open-profile': [userId: string]
 }>()
 
 const ui = useUiStore()
@@ -85,10 +133,54 @@ const isSystem = computed(() => props.message.type === 'system')
 const time = computed(() => formatBubbleTime(props.message.createdAt))
 const showSender = computed(() => props.convType === 'group' && !props.mine && !isSystem.value)
 
-/** 附件消息：图片/文件。正文可能为空串，此时气泡里只有附件块。 */
-const attachment = computed<Attachment | null>(() => props.message.attachment ?? null)
-const isAttachmentMsg = computed(() => !!attachment.value && !isSystem.value)
+/* ── 撤回 ─────────────────────────────────────────────────────── */
+
+/** 已撤回：正文与附件一律不渲染（见文件头注释第 1 条）。 */
+const recalled = computed(() => props.message.recalled === true)
+
+/**
+ * 撤回提示文案。
+ *
+ * 自己撤回显示「你」——群聊里「你撤回了一条消息」比「张三撤回了一条消息」
+ * 更符合各家 IM 的既有习惯，也避免昵称过长把提示撑到换行。
+ */
+const recallText = computed(() => {
+  if (props.mine) return '你撤回了一条消息'
+  const who = props.senderName?.trim()
+  return who ? `${who}撤回了一条消息` : '对方撤回了一条消息'
+})
+
+/* ── 附件 ─────────────────────────────────────────────────────── */
+
+/** 一组附件（v2：恒为数组，空数组表示无附件）。 */
+const attachments = computed<Attachment[]>(() => props.message.attachments ?? [])
+const hasAttachments = computed(() => attachments.value.length > 0)
 const hasText = computed(() => props.message.content.trim().length > 0)
+
+/** 附件下载按钮只针对第一个文件类附件（图片/视频走 Viewer 内部的下载入口）。 */
+const firstFileAttachment = computed<Attachment | null>(() => {
+  return attachments.value.find((a) => a.kind === 'file') ?? attachments.value[0] ?? null
+})
+const hasFileAttachment = computed(() => attachments.value.some((a) => a.kind === 'file'))
+
+/* ── 引用回复 ─────────────────────────────────────────────────── */
+
+const replyTo = computed(() => props.message.replyTo ?? null)
+
+function onJumpTo(): void {
+  const target = replyTo.value
+  if (!target) return
+  emit('jump-to', target.msgId)
+}
+
+/** 点对方头像 → 抛给上层跳访客资料页（需求 2）。 */
+function onOpenProfile(): void {
+  const target = props.senderId || props.message.senderId
+  if (!target) return
+  emit('open-profile', target)
+}
+
+/* ── 折叠 / 渲染态 ────────────────────────────────────────────── */
 
 /**
  * 长消息折叠。
@@ -98,7 +190,9 @@ const hasText = computed(() => props.message.content.trim().length > 0)
  * 直接失败。所以折叠只用 CSS（max-height + overflow），展开即去掉这个类。
  */
 const CLAMP_THRESHOLD = 2000
-const clampable = computed(() => !isSystem.value && props.message.content.length > CLAMP_THRESHOLD)
+const clampable = computed(
+  () => !isSystem.value && !recalled.value && props.message.content.length > CLAMP_THRESHOLD,
+)
 const expanded = computed(() => expandedOnce.value || !clampable.value)
 const expandedOnce = ref(false)
 
@@ -109,14 +203,16 @@ const expandedOnce = ref(false)
  * 切换不改变 message 数据，只改视图，因此不会影响发送/重试。
  */
 const renderMode = ref<'rendered' | 'source'>('rendered')
-const canToggleSource = computed(() => !isSystem.value && hasText.value && hasMarkdownSyntax(props.message.content))
+const canToggleSource = computed(
+  () => !isSystem.value && !recalled.value && hasText.value && hasMarkdownSyntax(props.message.content),
+)
 
 /** 消息主键：优先服务端 msgId，乐观消息则用 localId（两者都是稳定字符串）。 */
 const msgId = computed(() => props.message.msgId || props.message.localId)
 
+/* ── 手机长按菜单 ─────────────────────────────────────────────── */
+
 /**
- * 手机长按菜单。
- *
  * 判定逻辑（阈值、取消、是否该弹）收敛在 `messageMenu.ts` 的纯函数里，
  * 这样在 node 环境（本项目 vitest 没有 jsdom）也能直接单测 —— 组件这里
  * 只负责把 DOM 事件喂进去、把结果渲染出来。
@@ -169,13 +265,50 @@ function closeMenu(): void {
 
 onUnmounted(clearPress)
 
+/* ── 菜单可用性 ───────────────────────────────────────────────── */
+
+/**
+ * 能否引用回复。
+ *
+ * 必须有**服务端 msgId** 且已发送成功：乐观消息的 id 是本地 `localId`，
+ * 服务端不认识，拿它当 replyToMsgId 发出去会 400/404。与其让用户点了回复
+ * 再看到失败，不如这条消息在发送成功前干脆不给「回复」。
+ * 已撤回的消息也不给回复 —— 引用一条「已撤回」没有信息价值。
+ */
+const canReply = computed(
+  () =>
+    !isSystem.value &&
+    !recalled.value &&
+    props.message.status === 'sent' &&
+    props.message.msgId.length > 0,
+)
+
+/**
+ * 能否撤回。
+ *
+ * 「作者本人 + 未撤回 + 已发送成功 + 距 createdAt ≤ 120s」四条判定全部收敛在
+ * `messageMenu.ts` 的纯函数里（可单测），组件只喂当前时间进去。
+ * 注意这里的结果只决定**菜单里显不显示**；真正拦截仍在服务端（403
+ * RECALL_WINDOW_EXPIRED）—— 本地时钟不准时也不该让请求发不出去。
+ */
+const canRecall = computed(() =>
+  canRecallMessage({
+    isMine: props.mine,
+    recalled: recalled.value,
+    status: props.message.status,
+    createdAt: props.message.createdAt,
+  }),
+)
+
 /** 菜单项清单（顺序与出现条件都在 messageMenu.ts 里定）。 */
 const menuItems = computed(() =>
   messageMenuItems({
     hasText: hasText.value,
+    canReply: canReply.value,
     canToggle: canToggleSource.value,
     pinned: props.pinned === true,
-    hasAttachment: !!attachment.value,
+    hasAttachment: hasAttachments.value,
+    canRecall: canRecall.value,
   }),
 )
 
@@ -233,8 +366,20 @@ function menuCopy(): void {
 
 function menuDownload(): void {
   closeMenu()
-  const att = attachment.value
+  const att = firstFileAttachment.value
   if (att) void onDownload(att)
+}
+
+/** 菜单「回复」：关菜单后把 msgId 抛给上层（上层负责设置 composer 的 replyTarget）。 */
+function menuReply(): void {
+  closeMenu()
+  emit('reply', msgId.value)
+}
+
+/** 菜单「撤回」：关菜单后抛给上层（上层负责调接口 + toast）。 */
+function menuRecall(): void {
+  closeMenu()
+  emit('recall', msgId.value)
 }
 
 watch(
@@ -254,6 +399,15 @@ watch(
       <span class="sys__text">{{ message.content }}</span>
     </div>
 
+    <!--
+      已撤回：整段不渲染正文与附件，只留一条居中灰色系统提示。
+      这不是「视觉降级」，是**数据脱敏**——撤回后 content 已由服务端清空，
+      但本地缓存/乐观消息里可能还留着撤回前的正文，走气泡分支就会画出来。
+    -->
+    <div v-else-if="recalled" class="sys sys--recall">
+      <span class="sys__text">{{ recallText }}</span>
+    </div>
+
     <div
       v-else
       class="line"
@@ -264,13 +418,28 @@ watch(
       @touchcancel="onTouchEnd"
       @contextmenu="onContextMenu"
     >
-      <AppAvatar
+      <!--
+        对方头像（需求 2：点消息里的头像进访客资料页）。
+        用 <button> 包住而不是给 AppAvatar 加 click —— AppAvatar 是纯展示组件
+        （无 emit），给它塞交互会把 a11y 责任散到 9 个调用方。这里保持
+        「可点的是按钮、按钮里有头像」，键盘可 Tab 到、回车可触发。
+        `touch-target` 保证移动端热区 ≥44px（图标只有 34px）。
+      -->
+      <button
         v-if="!mine"
-        class="line__avatar"
-        :name="senderName || '?'"
-        :seed="senderId || message.senderId"
-        :size="34"
-      />
+        class="line__avatar-btn touch-target"
+        type="button"
+        :aria-label="`查看 ${senderName || '对方'} 的资料`"
+        @click="onOpenProfile"
+      >
+        <AppAvatar
+          class="line__avatar"
+          :name="senderName || '?'"
+          :seed="senderId || message.senderId"
+          :src="senderAvatar ?? ''"
+          :size="34"
+        />
+      </button>
 
       <div class="line__col">
         <span v-if="showSender" class="line__sender">{{ senderName }}</span>
@@ -284,16 +453,32 @@ watch(
             class="bubble"
             :class="[
               mine ? 'bubble--mine' : 'bubble--peer',
-              isAttachmentMsg ? 'bubble--attach' : '',
+              hasAttachments ? 'bubble--attach' : '',
+              hasAttachments && hasText ? 'bubble--attach-text' : '',
               clampable && !expanded ? 'bubble--clamped' : '',
             ]"
           >
-            <!-- 附件（图片缩略图 / 文件卡片）。点图片开灯箱，点文件卡片下载。 -->
+            <!--
+              引用条：气泡顶部一行（引用者昵称 + 被引用内容预览）。
+              必须可点击跳回原消息，所以是 button（键盘可达），不是装饰 div。
+            -->
+            <button
+              v-if="replyTo"
+              class="quote"
+              type="button"
+              :aria-label="`跳到 ${replyTo.senderName} 的这条消息`"
+              @click="onJumpTo"
+            >
+              <span class="quote__name">{{ replyTo.senderName }}</span>
+              <span class="quote__preview">{{ replyTo.preview }}</span>
+            </button>
+
+            <!-- 附件集合：图片网格 / 单个视频 / 文件卡片。点图片开灯箱，点文件下载。 -->
             <AttachmentView
-              v-if="attachment"
+              v-if="hasAttachments"
               class="bubble__att"
-              :attachment="attachment"
-              :mine="mine"
+              :attachments="attachments"
+              :align="mine ? 'self' : 'peer'"
               @download="onDownload"
             />
 
@@ -355,6 +540,16 @@ watch(
                   stroke-linejoin="round"
                 />
               </svg>
+            </button>
+            <button
+              v-if="canReply"
+              class="bubble__tool"
+              type="button"
+              title="回复"
+              aria-label="回复"
+              @click="emit('reply', msgId)"
+            >
+              <AppIcon name="reply" :size="14" />
             </button>
             <button
               v-if="canToggleSource"
@@ -436,6 +631,10 @@ watch(
           <span class="sheet__label">复制正文</span>
           <span class="sheet__hint">纯文本</span>
         </button>
+        <button v-if="menuItems.includes('reply')" class="sheet__item" type="button" @click="menuReply">
+          <span class="sheet__label">回复</span>
+          <span class="sheet__hint">引用这条消息</span>
+        </button>
         <button
           v-if="menuItems.includes('toggle-source')"
           class="sheet__item"
@@ -450,13 +649,22 @@ watch(
           <span class="sheet__hint">{{ pinned ? '从置顶条移除' : '在会话顶部固定' }}</span>
         </button>
         <button
-          v-if="menuItems.includes('download-attachment')"
+          v-if="menuItems.includes('download-attachment') && hasFileAttachment"
           class="sheet__item"
           type="button"
           @click="menuDownload"
         >
           <span class="sheet__label">下载附件</span>
-          <span class="sheet__hint">{{ attachment?.name }}</span>
+          <span class="sheet__hint">{{ firstFileAttachment?.name }}</span>
+        </button>
+        <button
+          v-if="menuItems.includes('recall')"
+          class="sheet__item sheet__item--danger"
+          type="button"
+          @click="menuRecall"
+        >
+          <span class="sheet__label">撤回</span>
+          <span class="sheet__hint">2 分钟内可撤回</span>
         </button>
         <button class="sheet__item sheet__item--cancel" type="button" @click="closeMenu">
           <span class="sheet__label">取消</span>
@@ -479,6 +687,11 @@ watch(
   color: var(--color-system-msg);
   font-size: 12px;
 }
+/* 撤回提示：与系统消息同形态（居中、灰色），只是语气更弱一点 */
+.sys--recall .sys__text {
+  font-style: normal;
+  opacity: 0.88;
+}
 
 .line {
   display: flex;
@@ -493,8 +706,33 @@ watch(
   flex-direction: row;
 }
 
+/*
+ * 头像按钮：视觉上仍是「无边框的头像」，但热区是 44×44。
+ * 用负 margin 抵消多出来的点击区域，保证视觉间距与改造前一致
+ * （改造前 .line__avatar 只有 margin-top:2px）。
+ */
+.line__avatar-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: -5px -5px 0 -5px;
+  padding: 5px;
+  background: none;
+  border: 0;
+  border-radius: calc(var(--radius-md, 10px) + 5px);
+  cursor: pointer;
+}
+.line__avatar-btn:hover {
+  background: var(--app-hover);
+}
+.line__avatar-btn:focus-visible {
+  outline: 2px solid var(--color-brand-500, #1d88b0);
+  outline-offset: 2px;
+}
+
 .line__avatar {
   margin-top: 2px;
+  pointer-events: none;
 }
 
 .line__col {
@@ -559,9 +797,63 @@ watch(
   box-shadow: var(--shadow-panel);
 }
 
-/* 附件气泡：图片不加内边距，避免缩略图被「框」住 */
+/*
+ * 附件气泡：收紧内边距，避免缩略图被「框」住。
+ * 这个类名 e2e 依赖（`.bubble--attach` 用来定位带附件的消息），必须保留。
+ */
 .bubble--attach {
   padding: 6px;
+}
+/* 附件 + 正文同时存在时，文字一侧要留出正常呼吸空间 */
+.bubble--attach-text {
+  padding: 6px 10px 9px;
+}
+
+/* ── 引用条 ───────────────────────────────────────────────────── */
+.quote {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border: none;
+  /* 左侧竖条是「引用」的通用视觉语言，比整块底色更轻 */
+  border-left: 2px solid color-mix(in srgb, currentColor 42%, transparent);
+  border-radius: 0 5px 5px 0;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  color: inherit;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+}
+.quote:hover {
+  background: color-mix(in srgb, currentColor 15%, transparent);
+}
+.quote:focus-visible {
+  outline: 2px solid var(--color-brand-500);
+  outline-offset: 1px;
+}
+.quote__name {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-medium, 500);
+  opacity: 0.9;
+}
+/* 预览只显示一行（要求：1 行省略） */
+.quote__preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.68;
 }
 
 .bubble__text {
@@ -703,6 +995,14 @@ watch(
   outline: 2px solid var(--color-brand-500);
   outline-offset: -2px;
 }
+/* 撤回是破坏性操作：危险色 + 与其它项隔开一点 */
+.sheet__item--danger {
+  margin-top: 2px;
+  color: var(--color-danger-500);
+}
+.sheet__item--danger:hover {
+  background: color-mix(in srgb, var(--color-danger-500) 12%, transparent);
+}
 .sheet__hint {
   flex: 0 0 auto;
   max-width: 55%;
@@ -711,6 +1011,10 @@ watch(
   white-space: nowrap;
   font-size: 12px;
   color: var(--app-text-faint);
+}
+.sheet__item--danger .sheet__hint {
+  color: inherit;
+  opacity: 0.72;
 }
 .sheet__item--cancel {
   justify-content: center;
@@ -747,6 +1051,9 @@ watch(
     display: none;
   }
   .bubble__expand {
+    min-height: 32px;
+  }
+  .quote {
     min-height: 32px;
   }
 }

@@ -179,7 +179,9 @@ async function sendAs(username, convId, content) {
   const r = await fetch(`${BACKEND}/api/v1/conversations/${convId}/messages`, {
     method: 'POST',
     headers: H(t.token),
-    body: JSON.stringify({ clientMsgId: crypto.randomUUID(), type: 'text', content }),
+    // v2 契约 §2：body 不再接受 type（additionalProperties:false → 传了直接 400）。
+    // 消息 type 由服务端按附件推导。
+    body: JSON.stringify({ clientMsgId: crypto.randomUUID(), content }),
   })
   if (!r.ok) return null
   const m = await r.json()
@@ -250,8 +252,16 @@ async function main() {
     check('前置：注销前会话有气泡', beforeBubbles > 0, `bubble=${beforeBubbles}`)
     await shot(page, 'sec02-before-logout')
 
-    // 通过 UI 触发登出：手机端走「更多」，桌面端走侧栏。用桌面视口，取侧栏按钮。
-    await page.locator('.rail__tab[title="退出登录"]').click()
+    // 通过 UI 触发登出。用桌面视口。
+    // v2 起「退出登录」不再在侧栏底部 —— 需求 1 把它移进了个人信息：
+    //   点左上角头像（.rail__avatar）→ 打开个人信息抽屉 .pdrawer
+    //   → 点「退出登录」行 .pdrawer__entry--danger → AppModal 二次确认 → 点「退出登录」按钮
+    // 二次确认弹层里有两个按钮（取消 / 退出登录），必须按文字精确取，不能按 nth。
+    await page.locator('.rail__avatar').click()
+    await page.waitForSelector('.pdrawer', { timeout: 10_000 })
+    await page.locator('.pdrawer__entry--danger').click()
+    await page.waitForSelector('.mask .panel', { timeout: 10_000 })
+    await page.locator('.mask .panel__foot .btn', { hasText: '退出登录' }).click()
 
     const backToLogin = await until(async () => page.url().includes('/login'), 10_000)
     check('注销后立即离开受保护页面（URL 回 /login）', backToLogin, `url=${page.url()}`)

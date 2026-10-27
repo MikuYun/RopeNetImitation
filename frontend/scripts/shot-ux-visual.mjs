@@ -202,7 +202,6 @@ async function seedConversation() {
       headers: H(lines[i].who.token),
       body: JSON.stringify({
         clientMsgId: crypto.randomUUID(),
-        type: 'text',
         content: lines[i].text,
       }),
     })

@@ -86,7 +86,7 @@ const router = useRouter()
   fill: var(--color-brand-500);
   opacity: 0.08;
 }
-:root[data-theme='dark'] .nf__halo {
+:root[data-theme-mode='dark'] .nf__halo {
   opacity: 0.14;
 }
 

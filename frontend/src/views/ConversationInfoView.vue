@@ -272,6 +272,19 @@ function roleLabel(role: string): string {
   return role === 'owner' ? '群主' : role === 'admin' ? '管理员' : ''
 }
 
+/**
+ * 点成员 → 访客资料页（v2 §3）。
+ * 自己不开：跳到自己的访客页没有意义，直接去编辑资料更符合预期。
+ */
+function openMemberProfile(userId: string): void {
+  if (!userId) return
+  if (userId === auth.userId) {
+    void router.push({ name: 'profile' })
+    return
+  }
+  void router.push({ name: 'user-profile', params: { userId } })
+}
+
 /** 徽标文案（契约 §十四-3 要求三档都可见）。 */
 function roleBadge(role: MemberRole): string {
   return role === 'owner' ? '群主' : role === 'admin' ? '管理员' : '成员'
@@ -351,10 +364,17 @@ const avatarLimitText = formatBytes(UPLOAD_MAX_BYTES)
 
         <div class="info__members">
           <div v-for="m in detail.members" :key="m.user.id" class="member" :data-role="m.role">
-            <div class="member__avatar">
+            <!-- v2：点成员头像 → 访客资料页。做成独立 button（行本身不是可点元素，
+                 右侧还有角色/移出两个 button，整行可点会与之嵌套） -->
+            <button
+              class="member__avatar member__avatar--btn"
+              type="button"
+              :aria-label="`查看 ${m.user.displayName} 的资料`"
+              @click="openMemberProfile(m.user.id)"
+            >
               <AppAvatar :name="m.user.displayName" :seed="m.user.id" :size="36" :src="m.user.avatarUrl ?? ''" />
               <PresenceDot class="member__dot" :user-id="m.user.id" />
-            </div>
+            </button>
             <div class="member__col">
               <span class="member__name">
                 {{ m.user.displayName }}
@@ -416,6 +436,16 @@ const avatarLimitText = formatBytes(UPLOAD_MAX_BYTES)
             <span class="info__uid">#{{ detail.peer?.uid ?? '—' }}</span>
           </span>
         </div>
+        <!-- v2：单聊也能进对方的完整访客资料页（动态/好友数/加好友按钮） -->
+        <button
+          v-if="detail.peer"
+          class="info__peer-link"
+          type="button"
+          @click="openMemberProfile(detail.peer.id)"
+        >
+          <AppIcon name="user" :size="15" />
+          查看 TA 的资料
+        </button>
       </template>
 
       <p v-if="canManage" class="info__hint">群头像支持 JPG/PNG 等图片，不超过 {{ avatarLimitText }}。</p>
@@ -611,6 +641,20 @@ const avatarLimitText = formatBytes(UPLOAD_MAX_BYTES)
   position: relative;
   flex: 0 0 auto;
 }
+/* v2：头像变成按钮后要剥掉 button 默认样式，尺寸/位置保持原样 */
+.member__avatar--btn {
+  display: block;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+  border-radius: var(--radius-md);
+}
+.member__avatar--btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
 .member__dot {
   position: absolute;
   right: -2px;
@@ -699,6 +743,26 @@ const avatarLimitText = formatBytes(UPLOAD_MAX_BYTES)
 .info__uid {
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
+}
+/* v2：单聊资料区的「查看 TA 的资料」入口 */
+.info__peer-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: var(--spacing-touch-target);
+  margin-top: 8px;
+  padding: 0 10px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-md);
+  background: var(--app-panel);
+  color: var(--app-text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.info__peer-link:hover {
+  background: var(--app-hover);
+  color: var(--app-text);
 }
 .info__none {
   padding: 12px 0;

@@ -9,6 +9,7 @@
  */
 import type {
   Attachment,
+  AttachmentKind,
   ConversationDetail,
   ConversationSummary,
   ConversationType,
@@ -19,6 +20,7 @@ import type {
   MessageType,
   PinnedMessage,
   Relationship,
+  ReplyRef,
   UserBrief,
   WireMessage as DomainWireMessage,
 } from '@/types/domain'
@@ -31,6 +33,7 @@ import type {
   WireMember,
   WireMessage,
   WirePinnedMessage,
+  WireReplyRef,
   WireUser,
 } from './wire'
 
@@ -44,8 +47,22 @@ export function normalizeRole(raw: string): MemberRole {
 }
 
 export function normalizeMessageType(raw: string): MessageType {
-  if (raw === 'system' || raw === 'image' || raw === 'file') return raw
+  if (
+    raw === 'system' ||
+    raw === 'image' ||
+    raw === 'video' ||
+    raw === 'file' ||
+    raw === 'mixed'
+  ) {
+    return raw
+  }
   return 'text'
+}
+
+/** 附件 kind 白名单（v2）；未知值降级为 `file`（最保守：当成可下载的普通文件）。 */
+export function normalizeAttachmentKind(raw: string): AttachmentKind {
+  if (raw === 'image' || raw === 'video') return raw
+  return 'file'
 }
 
 /**
@@ -54,6 +71,9 @@ export function normalizeMessageType(raw: string): MessageType {
  * 图片/文件消息的 `content` 可能为空串（服务端允许附件消息不带正文），
  * 因此附件消息的 `type` **必须**由 kind 兜底推导 —— 否则旧后端（或某个只扩
  * 了 attachment 没扩 type 的版本）会把图片消息降级成一条空文本气泡。
+ *
+ * v2 的 kind 是 `'image'|'video'|'file'`，不能再写成
+ * `kind === 'image' ? 'image' : 'file'` —— 那样视频会被当成普通文件展示。
  */
 export function toAttachment(a: WireAttachment | null | undefined): Attachment | null {
   if (!a || !a.id) return null
@@ -62,9 +82,48 @@ export function toAttachment(a: WireAttachment | null | undefined): Attachment |
     name: a.name,
     mimeType: a.mimeType,
     size: a.size,
-    kind: a.kind === 'image' ? 'image' : 'file',
+    kind: normalizeAttachmentKind(a.kind),
     url: a.url,
     createdAt: a.createdAt,
+  }
+}
+
+/**
+ * 归一化附件数组（v2）。
+ *
+ * 兼容三种输入：
+ *   1. v2 的 `attachments: []` —— 直接用（缺字段也当空数组）；
+ *   2. 旧 v1 的 `attachment`（单数）—— 包成单元素数组；
+ *   3. 两个都有（灰度后端）—— **以 `attachments` 为准**，避免同一附件重复渲染。
+ *
+ * `null` → `[]`，不是 `[null]`：下游组件可以无条件 `v-for`。
+ */
+export function toAttachments(
+  list: Array<WireAttachment | null | undefined> | null | undefined,
+  single?: WireAttachment | null,
+): Attachment[] {
+  const source = Array.isArray(list) && list.length > 0 ? list : single ? [single] : []
+  const out: Attachment[] = []
+  for (const a of source) {
+    const att = toAttachment(a)
+    if (att) out.push(att)
+  }
+  return out
+}
+
+/**
+ * 归一化引用回复快照。
+ *
+ * 任何一个展示字段缺失都不应阻止气泡渲染引用条 —— 宁可为空字符串，也不要因此
+ * 丢掉 `msgId`（丢了就没法点击跳转原消息）。
+ */
+export function toReplyRef(r: WireReplyRef | null | undefined): ReplyRef | null {
+  if (!r || !r.msgId) return null
+  return {
+    msgId: r.msgId,
+    senderId: r.senderId,
+    senderName: r.senderName,
+    preview: r.preview ?? '',
   }
 }
 
@@ -184,7 +243,7 @@ export function toConversationSummary(c: WireConversation, selfId: string): Conv
           content: c.lastMessage.content,
           senderId: c.lastMessage.senderId,
           seq: c.lastMessage.seq,
-          attachmentKind: c.lastMessage.attachment?.kind ?? null,
+          attachmentKind: (c.lastMessage.attachments?.[0] ?? c.lastMessage.attachment)?.kind ?? null,
         }
       : null,
     lastSeq: c.lastSeq ?? 0,
@@ -212,14 +271,14 @@ export function toConversationDetail(c: WireConversation, selfId: string): Conve
 }
 
 export function toWireMessage(m: WireMessage): DomainWireMessage {
-  const attachment = toAttachment(m.attachment)
-  // 类型兜底：有附件却报成 text 的后端版本（早期只扩了 attachment 没扩 type）
-  // 按附件 kind 纠正，避免图片被渲染成空气泡。
+  const attachments = toAttachments(m.attachments, m.attachment)
+  // 类型兜底：v2 前只有单数 attachment，且某些版本「只扩了 attachment 没扩 type」，
+  // 有附件却报成 text —— 按附件组合重算，避免图片被渲染成空气泡。
   let type = normalizeMessageType(m.type)
-  if (attachment) {
-    if (type === 'text') type = attachment.kind === 'image' ? 'image' : 'file'
-  } else if (type === 'image' || type === 'file') {
-    // 反向兜底：声称是附件消息却拿不到附件元数据 —— 降级为文本，
+  if (attachments.length > 0) {
+    if (type === 'text') type = deriveTypeFromAttachments(attachments)
+  } else if (type === 'image' || type === 'video' || type === 'file' || type === 'mixed') {
+    // 反向兜底：声称是附件消息却拿不到任何附件元数据 —— 降级为文本，
     // 否则 UI 会渲染一个永远加载不出来的空附件卡片。
     type = 'text'
   }
@@ -231,9 +290,23 @@ export function toWireMessage(m: WireMessage): DomainWireMessage {
     seq: m.seq,
     type,
     content: m.content,
-    attachment,
+    attachments,
+    recalled: m.recalled === true,
+    recalledAt: m.recalledAt ?? null,
+    replyTo: toReplyRef(m.replyTo),
     createdAt: m.createdAt,
   }
+}
+
+/** 按附件组合推导 type，必须与服务端规则逐字一致（见 docs/v2/API-V2.md §2）。 */
+export function deriveTypeFromAttachments(attachments: Attachment[]): MessageType {
+  if (attachments.length === 0) return 'text'
+  const kinds = new Set(attachments.map((a) => a.kind))
+  if (kinds.size > 1) return 'mixed'
+  const only = attachments[0]?.kind
+  if (only === 'image') return 'image'
+  if (only === 'video') return 'video'
+  return 'file'
 }
 
 export function toLocalMessage(m: WireMessage): LocalMessage {
@@ -247,7 +320,10 @@ export function toLocalMessage(m: WireMessage): LocalMessage {
     seq: w.seq,
     type: w.type,
     content: w.content,
-    attachment: w.attachment,
+    attachments: w.attachments,
+    recalled: w.recalled,
+    recalledAt: w.recalledAt,
+    replyTo: w.replyTo,
     createdAt: w.createdAt,
     status: 'sent',
   }

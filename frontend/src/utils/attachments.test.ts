@@ -7,14 +7,22 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
+  MAX_ATTACHMENTS,
   MAX_UPLOAD_BYTES,
+  MAX_VIDEO_UPLOAD_BYTES,
   attachmentAltText,
   attachmentIconKind,
+  attachmentKindOf,
   attachmentPreviewText,
+  attachmentsPreviewText,
+  checkAttachmentSelection,
   checkUploadFile,
   formatBytes,
+  formatDuration,
   isImageAttachment,
+  isVideoAttachment,
   messageTypeOfAttachment,
+  messageTypeOfAttachments,
 } from './attachments'
 
 describe('checkUploadFile', () => {
@@ -124,5 +132,209 @@ describe('会话列表预览文案', () => {
   it('alt 文案带文件名，空名有兜底', () => {
     expect(attachmentAltText({ name: 'a.png' })).toBe('图片：a.png')
     expect(attachmentAltText({ name: '' })).toBe('图片附件')
+  })
+})
+
+/*
+ * ── v2：视频分档 / 多附件组合 / 新增预览文案 ──
+ *
+ * 这几条是 API 0.3.0 才出现的行为，之前没有测试保护：
+ *   - 视频上限 100MiB 与普通文件 10MiB 是**两档**，写成一档会让 50MB 的 mp4
+ *     被前端拦下（用户以为功能坏了），或者让 50MB 的 pdf 白跑一次上传再被 413。
+ *   - 合计 ≤9 / 视频 ≤1 的规则在三个入口（选文件、拖拽、粘贴）共用。
+ */
+describe('v2 附件分档：视频 100MiB / 图片与普通文件 10MiB', () => {
+  it('视频恰好 100MiB 放行，超 1 字节被拦且提示带体积', () => {
+    expect(checkUploadFile({ name: 'a.mp4', size: MAX_VIDEO_UPLOAD_BYTES, type: 'video/mp4' })).toEqual({
+      ok: true,
+    })
+    const r = checkUploadFile({
+      name: 'a.mp4',
+      size: MAX_VIDEO_UPLOAD_BYTES + 1,
+      type: 'video/mp4',
+    })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.code).toBe('UPLOAD_TOO_LARGE')
+      expect(r.message).toContain('100')
+    }
+  })
+
+  it('50MiB 的 mp4 放行（这正是分两档的意义：普通档只有 10MiB）', () => {
+    expect(checkUploadFile({ name: 'a.mp4', size: 50 * 1024 * 1024, type: 'video/mp4' })).toEqual({
+      ok: true,
+    })
+    // 同样体积的普通文件仍然被 10MiB 档拦住
+    const r = checkUploadFile({ name: 'a.pdf', size: 50 * 1024 * 1024, type: 'application/pdf' })
+    expect(r.ok).toBe(false)
+  })
+
+  it('webm 也算视频', () => {
+    expect(checkUploadFile({ name: 'a.webm', size: 20 * 1024 * 1024, type: 'video/webm' })).toEqual({
+      ok: true,
+    })
+  })
+
+  it('非 mp4/webm 的视频 mime 被拦（MOV 等后端不收）', () => {
+    const r = checkUploadFile({ name: 'a.mov', size: 1024, type: 'video/quicktime' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.code).toBe('UNSUPPORTED_TYPE')
+      expect(r.message).toContain('MP4')
+    }
+  })
+
+  it('不支持的普通文件类型给出统一提示文案', () => {
+    const r = checkUploadFile({ name: 'a.exe', size: 1024, type: 'application/x-msdownload' })
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.code).toBe('UNSUPPORTED_TYPE')
+      expect(r.message).toBe('仅支持图片、视频（MP4/WebM）、PDF、ZIP 与纯文本')
+    }
+  })
+
+  it('图片只受 10MiB 档约束（图片不因视频放宽）', () => {
+    expect(checkUploadFile({ name: 'a.png', size: MAX_UPLOAD_BYTES, type: 'image/png' })).toEqual({
+      ok: true,
+    })
+    expect(checkUploadFile({ name: 'a.png', size: MAX_UPLOAD_BYTES + 1, type: 'image/png' }).ok).toBe(
+      false,
+    )
+  })
+})
+
+describe('attachmentKindOf', () => {
+  it('mime 前缀优先', () => {
+    expect(attachmentKindOf('image/png', 'x.bin')).toBe('image')
+    expect(attachmentKindOf('video/mp4', 'x.bin')).toBe('video')
+    expect(attachmentKindOf('application/pdf', 'x.pdf')).toBe('file')
+  })
+
+  it('mime 为空时退回扩展名', () => {
+    expect(attachmentKindOf('', 'x.mp4')).toBe('video')
+    expect(attachmentKindOf(null, 'x.webm')).toBe('video')
+    expect(attachmentKindOf(undefined, 'x.png')).toBe('image')
+  })
+
+  it('无法判定时兜底 file（最保守的展示形态）', () => {
+    expect(attachmentKindOf('', 'x.bin')).toBe('file')
+  })
+})
+
+describe('checkAttachmentSelection：合计 ≤9 / 视频 ≤1 / 不重复', () => {
+  const img = (id: string) => ({ id, kind: 'image' as const })
+  const vid = (id: string) => ({ id, kind: 'video' as const })
+  const file = (id: string) => ({ id, kind: 'file' as const })
+
+  it('空数组放行', () => {
+    expect(checkAttachmentSelection([])).toEqual({ ok: true })
+  })
+
+  it('恰好 9 个放行，10 个被拦', () => {
+    const nine = Array.from({ length: MAX_ATTACHMENTS }, (_, i) => img(`a${i}`))
+    expect(checkAttachmentSelection(nine)).toEqual({ ok: true })
+    const r = checkAttachmentSelection([...nine, img('a-extra')])
+    expect(r.ok).toBe(false)
+    if (!r.ok) {
+      expect(r.code).toBe('TOO_MANY_ATTACHMENTS')
+      expect(r.message).toBe('最多 9 个附件，视频最多 1 个')
+    }
+  })
+
+  it('两个视频被拦（即使总数远不到 9）', () => {
+    const r = checkAttachmentSelection([vid('v1'), vid('v2')])
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.message).toContain('视频最多')
+  })
+
+  it('一个视频 + 8 张图（共 9）放行', () => {
+    const list = [vid('v1'), ...Array.from({ length: 8 }, (_, i) => img(`a${i}`))]
+    expect(checkAttachmentSelection(list)).toEqual({ ok: true })
+  })
+
+  it('重复 id 被拦（同一附件不能重复加两次）', () => {
+    const r = checkAttachmentSelection([img('a1'), img('a1')])
+    expect(r.ok).toBe(false)
+    if (!r.ok) expect(r.message).toContain('重复')
+  })
+
+  it('普通文件不计入视频名额', () => {
+    expect(checkAttachmentSelection([file('f1'), file('f2'), vid('v1')])).toEqual({ ok: true })
+  })
+})
+
+describe('messageTypeOfAttachments（乐观消息的 type 推导）', () => {
+  it('无附件 → text', () => {
+    expect(messageTypeOfAttachments([])).toBe('text')
+  })
+
+  it('单一 kind → 对应类型', () => {
+    expect(messageTypeOfAttachments([{ kind: 'image' } as never])).toBe('image')
+    expect(messageTypeOfAttachments([{ kind: 'video' } as never])).toBe('video')
+    expect(messageTypeOfAttachments([{ kind: 'file' } as never])).toBe('file')
+    expect(messageTypeOfAttachments([{ kind: 'file' } as never, { kind: 'file' } as never])).toBe(
+      'file',
+    )
+  })
+
+  it('混合 kind → mixed', () => {
+    expect(
+      messageTypeOfAttachments([{ kind: 'image' } as never, { kind: 'video' } as never]),
+    ).toBe('mixed')
+  })
+})
+
+describe('isVideoAttachment', () => {
+  it('认 kind 也认 mime 前缀', () => {
+    expect(isVideoAttachment({ kind: 'video', mimeType: 'application/octet-stream' })).toBe(true)
+    expect(isVideoAttachment({ kind: 'file', mimeType: 'video/mp4' })).toBe(true)
+    expect(isVideoAttachment({ kind: 'file', mimeType: 'image/png' })).toBe(false)
+  })
+})
+
+describe('attachmentsPreviewText（会话列表 / 置顶条的多附件文案）', () => {
+  it('空数组 → 空串（调用方据此回退到正文）', () => {
+    expect(attachmentsPreviewText([])).toBe('')
+  })
+
+  it('单个沿用 attachmentPreviewText', () => {
+    expect(attachmentsPreviewText([{ kind: 'image', name: 'a.png' }])).toBe('[图片]')
+    expect(attachmentsPreviewText([{ kind: 'video', name: 'a.mp4' }])).toBe('[视频]')
+    expect(attachmentsPreviewText([{ kind: 'file', name: '报告.pdf' }])).toBe('[文件] 报告.pdf')
+  })
+
+  it('同类多个折叠成 ×N（不把 9 个文件名排进单行）', () => {
+    expect(
+      attachmentsPreviewText([
+        { kind: 'image', name: '1.png' },
+        { kind: 'image', name: '2.png' },
+        { kind: 'image', name: '3.png' },
+      ]),
+    ).toBe('[图片 ×3]')
+  })
+
+  it('混合 kind 归为 [附件]', () => {
+    expect(
+      attachmentsPreviewText([
+        { kind: 'image', name: '1.png' },
+        { kind: 'file', name: 'a.pdf' },
+      ]),
+    ).toBe('[附件]')
+  })
+})
+
+describe('formatDuration（视频时长角标）', () => {
+  it('正常值输出 m:ss', () => {
+    expect(formatDuration(0.4)).toBe('0:00')
+    expect(formatDuration(5)).toBe('0:05')
+    expect(formatDuration(65)).toBe('1:05')
+    expect(formatDuration(600)).toBe('10:00')
+  })
+
+  it('非法 / 非正值返回空串（不渲染 0:00 这种假信息）', () => {
+    expect(formatDuration(0)).toBe('')
+    expect(formatDuration(-1)).toBe('')
+    expect(formatDuration(Number.NaN)).toBe('')
+    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe('')
   })
 })

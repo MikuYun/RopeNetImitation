@@ -80,7 +80,7 @@ function readyEnvelope(): Record<string, unknown> {
     v: 1,
     type: 'ready',
     timestamp: new Date().toISOString(),
-    data: { userId: 'u1', protocolVersion: 1 },
+    data: { userId: 'u1', protocolVersion: 2 },
   }
 }
 

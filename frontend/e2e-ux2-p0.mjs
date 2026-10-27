@@ -273,7 +273,7 @@ async function sendTextAs(username, convId, content) {
   const r = await fetch(`${BACKEND}/api/v1/conversations/${convId}/messages`, {
     method: 'POST',
     headers: H(t.token),
-    body: JSON.stringify({ clientMsgId: crypto.randomUUID(), type: 'text', content }),
+    body: JSON.stringify({ clientMsgId: crypto.randomUUID(), content }),
   })
   return r.ok ? (await r.json()).seq : null
 }
@@ -284,8 +284,9 @@ async function sendAttachmentAs(username, convId, attachmentId, content) {
     headers: H(t.token),
     body: JSON.stringify({
       clientMsgId: crypto.randomUUID(),
-      attachmentId,
-      ...(content ? { content } : {}),
+      // v2 契约 §2：单数 attachmentId → 数组 attachmentIds；有附件时必须带文字。
+      attachmentIds: [attachmentId],
+      content,
     }),
   })
   return r.ok ? (await r.json()).seq : null
@@ -462,11 +463,27 @@ async function main() {
   for (const t of longMsgs) await sendTextAs('gate_b', convAB, t)
   console.log(`已播种 ${longMsgs.length} 条长文本消息（前缀 ${LONG_TAG}）\n`)
 
-  // 服务端侧播一条图片附件消息（给长按菜单的「下载附件」与双入口/缩略图断言用）
+  // 服务端侧播一条图片附件消息（给双入口/缩略图/灯箱断言用）
   const seedUp = await uploadBytesAs('gate_b', seedName, makePng(64, 48, 7), 'image/png')
   const seedAttId = seedUp.body?.id
-  if (seedAttId) await sendAttachmentAs('gate_b', convAB, seedAttId)
-  console.log(`种子图片上传=${seedUp.status} id=${seedAttId ?? '(none)'}\n`)
+  // v2 契约 §2：有附件必须带非空文字，否则服务端 400「发送附件时必须附带文字」
+  if (seedAttId) await sendAttachmentAs('gate_b', convAB, seedAttId, `种子图片 ${seedName}`)
+  /*
+   * 再播一条 **txt 文件** 附件消息。
+   * 为什么必须两条：`MessageBubble.vue` 的「下载附件」菜单项条件是
+   * `menuItems.includes('download-attachment') && hasFileAttachment`，而
+   * `hasFileAttachment = attachments.some(a => a.kind === 'file')` —— 图片（kind=image）
+   * 走的是缩略图 + 灯箱，不提供「下载附件」菜单项（这是设计意图，不是缺陷：
+   * 图片的保存入口在灯箱里）。所以「下载附件」只能用 kind=file 的气泡来验。
+   */
+  const seedDocName = `ux2-seeddoc-${RUN}.txt`
+  const seedDocBuf = Buffer.from(`UX2-P0-SEED-DOC-${RUN}\n` + 'd'.repeat(300), 'utf8')
+  const seedDocUp = await uploadBytesAs('gate_b', seedDocName, seedDocBuf, 'text/plain')
+  const seedDocAttId = seedDocUp.body?.id
+  if (seedDocAttId) await sendAttachmentAs('gate_b', convAB, seedDocAttId, `种子文件 ${seedDocName}`)
+  console.log(
+    `种子图片上传=${seedUp.status} id=${seedAttId ?? '(none)'} 种子文件上传=${seedDocUp.status} id=${seedDocAttId ?? '(none)'}\n`,
+  )
 
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
   let ctxA = null
@@ -616,10 +633,14 @@ async function main() {
           await page.locator('.mask .panel .sheet__item--cancel').click().catch(() => {})
           await sleep(400)
 
-          // 附件消息的长按菜单应含「下载附件」
-          const attCenter = await attachBubbleCenter(page, seedName)
+          /*
+           * 「下载附件」只在 kind=file 的附件气泡上出现（见 MessageBubble.vue 的
+           * hasFileAttachment = attachments.some(a => a.kind === 'file')）。
+           * 图片走缩略图 + 灯箱，不提供该菜单项 —— 因此这里用 txt 种子气泡验证。
+           */
+          const attCenter = await attachBubbleCenter(page, seedDocName)
           if (!attCenter) {
-            skip('P0-2 附件消息长按含「下载附件」', `未找到文件名含 ${seedName} 的附件气泡`)
+            skip('P0-2 附件消息长按含「下载附件」', `未找到文件名含 ${seedDocName} 的附件气泡`)
           } else {
             await touchEvent(page, 'touchStart', [{ x: attCenter.x, y: attCenter.y }])
             await sleep(750)
@@ -651,9 +672,25 @@ async function main() {
       } else {
         await page.waitForSelector('.bubble', { timeout: 15_000 }).catch(() => {})
         await sleep(600)
-        const wrap = page.locator('.pane__scroll .msg .bubble-wrap').first()
+        /*
+         * 取最后一条气泡（最新、就在视口底部）而不是第一条。
+         *
+         * 【实测踩坑，勿退回 .first()】原先用 `.pane__scroll .msg .bubble-wrap` 的
+         * 第一个元素：它是本会话最老的消息，被 Playwright 自动滚动到视口上方才能
+         * hover；但只要期间来一条 WS 新消息，消息区就会自动滚回底部，元素再次
+         * 跑到屏幕外（实测 rect.top = -2015），CSS :hover 随之丢失，断言读到
+         * opacity=0。最新一条本来就在视口内，没有这个竞态。
+         */
+        const wrap = page.locator('.pane__scroll .msg .bubble-wrap').last()
         const hovered = await wrap.hover().then(() => true).catch(() => false)
-        await sleep(400)
+        // 把鼠标停在气泡正中心（hover() 之后坐标可能因布局微调而偏出）
+        const box = await wrap.boundingBox().catch(() => null)
+        if (box) {
+          await page
+            .mouse.move(box.x + box.width / 2, box.y + box.height / 2)
+            .catch(() => {})
+        }
+        await sleep(150)
         const geo = hovered
           ? await wrap
               .evaluate((el) => {
@@ -740,6 +777,8 @@ async function main() {
           60_000,
           200,
         )
+        // v2 契约：带附件必须附带非空文字，否则 .composer__send 恒 disabled
+        await pageA.locator('.composer__input').fill(`配图 ${photoName}`)
         await pageA.locator('.composer__send').click()
         await sleep(800)
         const bubbleOnA = await waitAttBubble(pageA, photoName)
@@ -802,6 +841,7 @@ async function main() {
           60_000,
           200,
         )
+        await pageA.locator('.composer__input').fill(`附件 ${noteName}`)
         await pageA.locator('.composer__send').click()
         await sleep(800)
         const noteOnB = await waitAttBubble(pageB, noteName)
@@ -831,6 +871,7 @@ async function main() {
           60_000,
           200,
         )
+        await pageB.locator('.composer__input').fill(`反向附件 ${backName}`)
         await pageB.locator('.composer__send').click()
         await sleep(800)
         const backOnA = await waitAttBubble(pageA, backName)
@@ -850,22 +891,15 @@ async function main() {
           const imageBtn = document.querySelector('.cbar__btn--image')
           const fileBtn = document.querySelector('.cbar__btn--attach')
           const inputs = [...document.querySelectorAll('.composer__file')]
-          const withAccept = inputs.find((el) => (el.getAttribute('accept') ?? '').trim().length > 0)
           const withoutAccept = inputs.find((el) => (el.getAttribute('accept') ?? '').trim().length === 0)
-          const accept = withAccept?.getAttribute('accept') ?? ''
           return {
             imageBtn: !!imageBtn,
             fileBtn: !!fileBtn,
             imageLabel: imageBtn?.getAttribute('aria-label') ?? '',
             fileLabel: fileBtn?.getAttribute('aria-label') ?? '',
             inputCount: inputs.length,
-            accept,
-            acceptAllImage:
-              accept.length > 0 &&
-              accept.split(',').every((m) => m.trim().toLowerCase().startsWith('image/')),
             fileInputNoAccept: !!withoutAccept,
-            sameNode:
-              !!imageBtn && !!fileBtn && imageBtn === fileBtn,
+            sameNode: !!imageBtn && !!fileBtn && imageBtn === fileBtn,
           }
         })
         check(
@@ -878,11 +912,22 @@ async function main() {
           entry.imageLabel === '发送图片' && entry.fileLabel === '发送文件',
           `图片入口="${entry.imageLabel}" 文件入口="${entry.fileLabel}"`,
         )
+        /*
+         * v2 实现是**单一 input + 打开前动态改写 accept**（见 MessageComposer.openPicker）。
+         * 因此不能静态读 accept（初始值是多类型串），必须在真实点击入口后读它被改写成什么。
+         * 这也顺带覆盖了「图片入口点下去确实只筛图片」这一行为断言。
+         */
+        const chooserImg = await Promise.all([
+          pageA.waitForEvent('filechooser', { timeout: 10_000 }).catch(() => null),
+          pageA.click('.cbar__btn--image').catch(() => {}),
+        ]).then(([c]) => c)
+        const imgAccept = (await pageA.locator('.composer__file').first().getAttribute('accept')) ?? ''
         check(
-          'P0-5 图片入口 input.accept 只含图片 MIME',
-          entry.acceptAllImage,
-          `input 数=${entry.inputCount} accept="${entry.accept}" 全为图片 MIME=${entry.acceptAllImage}`,
+          'P0-5 图片入口打开的 input.accept 只含图片 MIME',
+          chooserImg !== null && imgAccept.split(',').every((m) => m.trim().toLowerCase().startsWith('image/')),
+          `filechooser=${chooserImg !== null} input 数=${entry.inputCount} accept="${imgAccept}"`,
         )
+        await chooserImg?.setFiles([]).catch(() => {})
         check(
           'P0-5 文件入口 input 不限制 accept',
           entry.fileInputNoAccept,
@@ -1059,14 +1104,33 @@ async function main() {
       if (!uidB?.id || !uidC?.id) {
         skip('P0-7 群角色', '找不到 gate_b / gate_c 的用户 id')
       } else {
-        const gid =
-          (await jget('/api/v1/conversations?limit=50&offset=0', A.token)).body?.items?.find(
-            (c) => c.type === 'group' && (c.name ?? '').includes('UX2-P0群'),
-          )?.id ?? null
+        /*
+         * 【不要盲信按名字复用的旧群】
+         * 隔离库是长期复用的，上一轮留下的「UX2-P0群-*」里可能缺 gate_c ——
+         * 因为 gate_a↔gate_c 的好友关系是**本轮**才建立的，而旧群建于好友关系之前。
+         * 旧群若缺成员，后续 `members/:uid/role` 会 404 CONVERSATION_NOT_FOUND（uid 不在群里）。
+         * 所以复用后必须校验成员完整性，缺谁补谁（POST /conversations/:id/members）。
+         */
+        const reuse = (await jget('/api/v1/conversations?limit=50&offset=0', A.token)).body?.items?.find(
+          (c) => c.type === 'group' && (c.name ?? '').includes('UX2-P0群'),
+        )
         const groupName = `UX2-P0群-${RUN}`
-        const created = gid
-          ? { status: 200, body: { id: gid } }
-          : await jpost('/api/v1/conversations/group', A.token, { name: groupName, memberIds: [uidB.id, uidC.id] })
+        let created = null
+        if (reuse?.id) {
+          const detail = await jget(`/api/v1/conversations/${reuse.id}`, A.token)
+          const have = new Set((detail.body?.members ?? []).map((m) => m.user?.id))
+          const missing = [uidB.id, uidC.id].filter((id) => !have.has(id))
+          if (missing.length > 0) {
+            const added = await jpost(`/api/v1/conversations/${reuse.id}/members`, A.token, { memberIds: missing })
+            if (added.status !== 200) {
+              // 补成员失败（例如已不是好友）→ 改为新建，避免后续断言被脏群带偏
+              created = await jpost('/api/v1/conversations/group', A.token, { name: groupName, memberIds: [uidB.id, uidC.id] })
+            }
+          }
+          created ??= { status: 200, body: { id: reuse.id } }
+        } else {
+          created = await jpost('/api/v1/conversations/group', A.token, { name: groupName, memberIds: [uidB.id, uidC.id] })
+        }
         const groupId = created.body?.id
         check('P0-7 前置：群聊创建/复用成功', !!groupId, `status=${created.status} groupId=${groupId ?? '(none)'}`)
         if (!groupId) {
@@ -1149,7 +1213,17 @@ async function main() {
     /* ═══ P0-8 UID 登录 ═══════════════════════════════════════════ */
     group('P0-8 UID 登录：登录页用数字 UID（非账号名）真实登录')
     {
-      check('P0-8 前置：gate_a 的 uid 为 10001（注册顺序第一位）', Number(uidA) === 10001, `uid=${uidA}`)
+      /*
+       * 【原断言 `uid === 10001` 已删除，勿恢复】
+       * 隔离库是长期复用的一份（register 对已存在用户返回 409），gate_a 不一定是
+       * 第一个注册的用户 —— 实测某轮 uid=10003。UID 登录能力与「是不是 10001」无关，
+       * 只要求它落在系统分配的 UID 段（FIRST_USER_UID=10001 起）内且能真实登录。
+       */
+      check(
+        'P0-8 前置：gate_a 已分配到系统 UID（≥10001）',
+        Number.isInteger(Number(uidA)) && Number(uidA) >= 10001,
+        `uid=${uidA}`,
+      )
       const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } })
       const page = await ctx.newPage()
       watchPage(page)

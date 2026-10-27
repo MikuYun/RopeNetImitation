@@ -4,8 +4,13 @@
  * 单独成文件是为了避免循环依赖：client 不认识 store，store 也不认识 client，
  * 由这里把两者接起来（在 main.ts 启动时注册一次）。
  *
- * 契约基准：backend/API.md §6（v0.2.0）。
- * 注意：**发送消息与已读走 REST**，本层只处理服务端推送的事件。
+ * 契约基准：docs/v2/API-V2.md §2/§5（API 0.3.0，protocolVersion = 2）。
+ * 注意：**发送消息、撤回与已读走 REST**，本层只处理服务端推送的事件。
+ *
+ * v2 要点：
+ *   - 消息的附件改成 `attachments[]`，单数 `attachment` 只是灰度兼容字段；
+ *   - 新增 `message.updated`（撤回/编辑），必须走 message store 的**覆盖式**写入；
+ *   - 新增 `post.*` 四个广播事件：消息层不解释业务，只负责解析并转发给订阅者。
  */
 import { useAuthStore } from '@/stores/auth'
 import { useConversationStore } from '@/stores/conversation'
@@ -23,16 +28,20 @@ import {
   zConversationRemovedData,
   zErrorData,
   zFriendRequestData,
+  zMessage,
   zMessageCreatedData,
+  zMessageUpdatedData,
+  zPostEventData,
   zPresenceData,
   zReadUpdatedData,
   zReadyData,
   zTypingData,
   zConversation,
   type InboundEnvelope,
+  type PostEventData,
 } from './schema'
-import { toPinnedMessage } from '@/api/normalize'
-import type { ConversationSummary } from '@/types/domain'
+import { toPinnedMessage, toWireMessage } from '@/api/normalize'
+import type { ConversationSummary, WireMessage as DomainWireMessage } from '@/types/domain'
 
 /**
  * 补偿编排（契约 §5「重连建议」六步，此处为可执行版本）：
@@ -140,10 +149,109 @@ export function registerWsHandlers(): void {
 }
 
 /**
- * 把 WS 推送的会话对象归一化为内部摘要。
- * WS 与 REST 共用同一套字段（v0.2.0），但 WS 帧里 members 可能被省略，
- * 故这里对可选字段做兜底。
+ * 把 WS 推来的（zod 解析过的）Message 归一化成领域模型。
+ *
+ * 这里必须过 `toWireMessage`，不能直接拿 zod 的产物当领域对象：
+ *   - 灰度期旧后端只发单数 `attachment`，得包成 `attachments[]`；
+ *   - `type` 可能与附件组合不一致（旧后端没扩 type），归一化层会重算。
  */
+function toDomainMessage(raw: z.infer<typeof zMessage>): DomainWireMessage {
+  return toWireMessage(raw)
+}
+
+/* ── 广场事件订阅（fe-square 用） ──────────────────────────────── */
+
+/**
+ * 广场广播事件的载荷与类型。
+ *
+ * 消息层**不解释广场业务**（不调帖子接口、不碰 square store），只做两件事：
+ * 解析帧形状 + 分发给订阅者。这样广场模块可以独立演进，出问题也不会
+ * 连带把消息分发打挂。
+ */
+export interface PostWsEvent {
+  /** 事件名，与 S2C 的 `post.*` 一一对应。 */
+  type: 'post.created' | 'post.deleted' | 'post.liked' | 'post.commented'
+  data: PostEventData
+}
+
+export type PostEventListener = (event: PostWsEvent) => void
+
+/** 订阅者集合；用 Set 保证重复订阅只生效一次。 */
+const postEventListeners = new Set<PostEventListener>()
+
+/**
+ * 订阅广场 WS 事件。返回取消订阅函数（组件 `onUnmounted` 里调用）。
+ *
+ * 为什么用自建订阅表而不是给 wsClient 加多订阅者：client 的 `setEvents()`
+ * 是单订阅者语义（整体替换），改它等于改全局唯一分发器，风险远大于收益。
+ */
+export function onPostWsEvent(listener: PostEventListener): () => void {
+  postEventListeners.add(listener)
+  return () => {
+    postEventListeners.delete(listener)
+  }
+}
+
+function emitPostEvent(type: PostWsEvent['type'], data: PostEventData): void {
+  for (const listener of postEventListeners) {
+    try {
+      listener({ type, data })
+    } catch (e) {
+      // 订阅者自己的异常不能连带打断其他订阅者与后续帧处理
+      console.warn('[ws] 广场事件订阅者抛错', e)
+    }
+  }
+}
+
+/**
+ * 撤回后同步脱敏置顶列表（API-V2 §2：置顶记录里的消息同样按撤回规则脱敏）。
+ *
+ * 置顶条上显示的是消息正文/附件预览，不脱敏就会把已撤回的内容继续晾在
+ * 会话顶部 —— 比气泡里残留更严重（置顶条一直在）。
+ *
+ * 这里就地替换而不是 `refresh()`：撤回是高频轻量事件，没必要为一个字段
+ * 重新打一次接口，且 refresh 在离线时会失败并清空列表。
+ */
+function sanitizePinnedForRecalled(conversationId: string, message: DomainWireMessage): void {
+  const pinsStore = usePinsStore()
+  const current = pinsStore.pinsOf(conversationId)
+  if (current.length === 0) return
+  let changed = false
+  const next = current.map((p) => {
+    if (p.message.msgId !== message.msgId) return p
+    changed = true
+    return { ...p, message }
+  })
+  if (changed) pinsStore.applyFromWs(conversationId, next)
+}
+
+/**
+ * 撤回后同步脱敏会话列表的「最后一条消息」预览。
+ *
+ * 服务端不会为撤回单独推 `conversation.updated`，若不本地改，列表里会一直
+ * 显示被撤回的正文（隐私泄露）。这里只处理「被撤回的正好是本会话最后一条」
+ * 的情形；其余情况上一页预览本来就不是它。
+ */
+function sanitizeSummaryForRecalled(message: DomainWireMessage): void {
+  const conversationStore = useConversationStore()
+  const conv = conversationStore.summariesById.get(message.conversationId)
+  if (!conv || !conv.lastMessage) return
+  if (conv.lastMessage.seq !== message.seq) return
+  conversationStore.upsertSummary(
+    {
+      ...conv,
+      lastMessage: {
+        type: message.type,
+        content: message.content,
+        senderId: message.senderId,
+        seq: message.seq,
+        attachmentKind: message.attachments[0]?.kind ?? null,
+      },
+    },
+    { keepPosition: true },
+  )
+}
+
 function toSummary(raw: z.infer<typeof zConversation>): ConversationSummary {
   return {
     id: raw.id,
@@ -165,7 +273,7 @@ function toSummary(raw: z.infer<typeof zConversation>): ConversationSummary {
           content: raw.lastMessage.content,
           senderId: raw.lastMessage.senderId,
           seq: raw.lastMessage.seq,
-          attachmentKind: raw.lastMessage.attachment?.kind ?? null,
+          attachmentKind: (raw.lastMessage.attachments?.[0] ?? raw.lastMessage.attachment)?.kind ?? null,
         }
       : null,
     lastSeq: raw.lastSeq ?? 0,
@@ -188,7 +296,9 @@ function dispatch(env: InboundEnvelope): void {
     case S2C.MESSAGE_CREATED: {
       const r = zMessageCreatedData.safeParse(env.data)
       if (!r.success) return
-      const { message: msg, unreadCount } = r.data
+      const { message: raw, unreadCount } = r.data
+      // 必须先归一化：旧后端的单数 attachment / 缺字段都在这里被扮平
+      const msg = toDomainMessage(raw)
       const isMine = msg.senderId === auth.userId
 
       // 缺口检测：seq 跳跃说明中间丢帧，立即补齐
@@ -197,18 +307,7 @@ function dispatch(env: InboundEnvelope): void {
       }
 
       // 三层去重入口：会按 clientMsgId 兑现乐观消息、按 msgId 去重
-      messageStore.insertOrIgnore({
-        msgId: msg.msgId,
-        conversationId: msg.conversationId,
-        senderId: msg.senderId,
-        clientMsgId: msg.clientMsgId ?? null,
-        seq: msg.seq,
-        type: msg.type,
-        content: msg.content,
-        // 附件必须逐字段透传 —— 少这一行，WS 推来的图片/文件消息就只剩空气泡
-        attachment: msg.attachment ?? null,
-        createdAt: msg.createdAt,
-      })
+      messageStore.insertOrIgnore(msg)
 
       const conv = conversationStore.summariesById.get(msg.conversationId)
       if (conv) {
@@ -230,7 +329,8 @@ function dispatch(env: InboundEnvelope): void {
               content: msg.content,
               senderId: msg.senderId,
               seq: msg.seq,
-              attachmentKind: msg.attachment?.kind ?? null,
+              // 列表只靠 kind 选图标，取第一条就够（API-V2 §2）
+              attachmentKind: msg.attachments[0]?.kind ?? null,
             },
             lastSeq: msg.seq,
             // P0-9：未读数只信服务端个性化值。缺字段时**不做本地 +1**
@@ -259,6 +359,41 @@ function dispatch(env: InboundEnvelope): void {
         // 新会话（别人给我建的 / 我被拉进群）
         void conversationStore.fetchAll()
       }
+      break
+    }
+
+    /**
+     * 消息被修改（v2）：当前唯一场景是**撤回**，未来可能有编辑。
+     *
+     * 与 `message.created` 的关键区别：这里不能用 `insertOrIgnore`（已存在则忽略），
+     * 必须 `upsertMessage`（以服务端最新版本为准、原地替换）—— 否则撤回后的脱敏
+     * 版本会被旧缓存遮住，用户永远看不到「已撤回」。
+     *
+     * 不做缺口检测/已读上报：撤回不产生新 seq，也不应该影响未读数。
+     */
+    case S2C.MESSAGE_UPDATED: {
+      const r = zMessageUpdatedData.safeParse(env.data)
+      if (!r.success) return
+      const msg = toDomainMessage(r.data.message)
+
+      messageStore.upsertMessage(msg)
+
+      if (msg.recalled) {
+        // 撤回后正文已经清空，但列表预览/置顶条是**别处缓存的副本**，得手动同步
+        sanitizeSummaryForRecalled(msg)
+        sanitizePinnedForRecalled(msg.conversationId, msg)
+      }
+      break
+    }
+
+    /* ── 广场广播（API-V2 §4）：只解析+转发，不碰业务 ──────────────── */
+    case S2C.POST_CREATED:
+    case S2C.POST_DELETED:
+    case S2C.POST_LIKED:
+    case S2C.POST_COMMENTED: {
+      const r = zPostEventData.safeParse(env.data)
+      if (!r.success) return
+      emitPostEvent(env.type as PostWsEvent['type'], r.data)
       break
     }
 

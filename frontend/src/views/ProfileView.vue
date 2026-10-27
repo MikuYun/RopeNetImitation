@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 个人资料页（ux2-contract §十四-2）。
+ * 个人资料页（ux2-contract §十四-2 / UI-V2 §3）。
  *
  * 契约要求「个人信息包含：头像、账号名称、昵称、uid」四项都必须出现：
  *   头像   —— 点击换图 → `uploadFile` → `PATCH /users/me {avatarUrl:'/api/v1/uploads/<uuid>'}`；
@@ -8,6 +8,11 @@
  *   昵称   —— `displayName`，可改；
  *   UID    —— `uid`，**只读**（对外稳定标识），显示成 `#10001` 并支持一键复制；
  * 另加「个人简介」bio（契约 §十 允许 `PATCH /users/me` 带 bio）。
+ *
+ * v2 追加（UI-V2 §3）：
+ *   - `embedded` prop：供移动端上拉抽屉（ProfileSheet）full 态复用，隐藏返回栏；
+ *   - 「账号与安全」区块：主题（内联 ThemePicker）+ 退出登录（二次确认 Modal）；
+ *   - 「我的动态」入口：跳到访客资料页看自己发布的帖子。
  *
  * 三个实现要点：
  *  1. 头像三点闭环：选图 → 上传 → PATCH。上传成功但 PATCH 失败会留下一个
@@ -25,15 +30,28 @@ import AppAvatar from '@/components/base/AppAvatar.vue'
 import AppButton from '@/components/base/AppButton.vue'
 import AppInput from '@/components/base/AppInput.vue'
 import AppIcon from '@/components/base/AppIcon.vue'
+import AppModal from '@/components/base/AppModal.vue'
+import ThemePicker from '@/components/theme/ThemePicker.vue'
 import { useAuthStore } from '@/stores/auth'
-import { useUiStore } from '@/stores/ui'
-import { updateMe } from '@/api/users'
+import { useUiStore, THEME_LABELS } from '@/stores/ui'
+import { fetchUserProfile, updateMe } from '@/api/users'
 import { uploadFile, UPLOAD_MAX_BYTES } from '@/api/uploads'
 import { checkUploadFile, formatBytes } from '@/utils/attachments'
 import { toApiError } from '@/api/http'
 import { goBack as goBackTo } from '@/composables/useBackNavigation'
 import { useRouter } from 'vue-router'
 import { useBreakpoint } from '@/composables/useBreakpoint'
+
+const props = withDefaults(
+  defineProps<{
+    /**
+     * 嵌入模式（移动端个人信息抽屉 full 态）。
+     * true 时隐藏返回栏与页面标题，根容器 `flex: 1`，其余内容完全一致。
+     */
+    embedded?: boolean
+  }>(),
+  { embedded: false },
+)
 
 const auth = useAuthStore()
 const ui = useUiStore()
@@ -218,11 +236,65 @@ async function copyUsername(): Promise<void> {
   const ok = await copyText(name)
   ui.toast(ok ? '账号名已复制' : '复制失败', ok ? 'info' : 'error')
 }
+
+/* ── v2：我的动态 / 账号与安全 ─────────────────────────────────────── */
+
+/**
+ * 自己发布的动态数。
+ *
+ * 用 `GET /users/:userId` 拿 `postCount`（后端算好的权威值），而不是把广场
+ * 首屏列表数一数 —— 后者受分页与缓存影响会骗人。失败时静默保持 0，不打断页面。
+ */
+const postCount = ref(0)
+
+async function loadPostCount(): Promise<void> {
+  const id = auth.userId
+  if (!id) return
+  try {
+    const view = await fetchUserProfile(id)
+    postCount.value = view.postCount
+  } catch {
+    /* 计数是锦上添花，失败不影响资料编辑 */
+  }
+}
+
+void loadPostCount()
+
+function openMyPosts(): void {
+  const id = auth.userId
+  if (!id) return
+  void router.push({ name: 'user-profile', params: { userId: id } })
+}
+
+const themeName = computed(() => THEME_LABELS[ui.theme] ?? '自定义')
+
+/** 主题选择区展开态（内联）。移动端改用全屏浮层。 */
+const themeOpen = ref(false)
+
+function toggleThemePanel(): void {
+  themeOpen.value = !themeOpen.value
+}
+
+/* 退出登录：必须二次确认（UI-V2 §3） */
+const logoutOpen = ref(false)
+
+function openLogout(): void {
+  logoutOpen.value = true
+}
+
+async function confirmLogout(): Promise<void> {
+  logoutOpen.value = false
+  themeOpen.value = false
+  await auth.logout()
+  void router.replace({ name: 'login' })
+}
+
+defineExpose({ themeOpen, logoutOpen })
 </script>
 
 <template>
-  <section class="profile">
-    <header class="profile__head">
+  <section class="profile" :class="{ 'profile--embedded': props.embedded }">
+    <header v-if="!props.embedded" class="profile__head">
       <button
         class="profile__back touch-target"
         type="button"
@@ -246,7 +318,13 @@ async function copyUsername(): Promise<void> {
           :aria-label="avatarBusy ? '正在上传头像' : '更换头像'"
           @click="pickAvatar"
         >
-          <AppAvatar :name="user.displayName" :seed="user.id" :size="80" :radius="16" :src="avatarSrc" />
+          <AppAvatar
+            :name="user.displayName"
+            :seed="user.id"
+            :size="80"
+            :radius="16"
+            :src="avatarSrc"
+          />
           <span class="profile__avatar-mask">{{ avatarBusy ? '上传中…' : '更换' }}</span>
         </button>
         <div class="profile__hero-text">
@@ -257,7 +335,13 @@ async function copyUsername(): Promise<void> {
             UID <b class="profile__uid">{{ uidText }}</b>
           </div>
           <div class="profile__hero-actions">
-            <AppButton label="更换头像" tone="ghost" size="sm" :loading="avatarBusy" @click="pickAvatar" />
+            <AppButton
+              label="更换头像"
+              tone="ghost"
+              size="sm"
+              :loading="avatarBusy"
+              @click="pickAvatar"
+            />
             <AppButton
               v-if="user.avatarUrl"
               label="恢复默认"
@@ -336,8 +420,81 @@ async function copyUsername(): Promise<void> {
         <AppButton label="保存" :loading="saving" :disabled="!canSave" @click="save" />
         <AppButton label="撤销" tone="ghost" :disabled="!dirty || saving" @click="resetForm" />
       </div>
-      <p v-if="!dirty" class="profile__hint profile__hint--quiet">账号名称与 UID 由系统分配，不支持修改。</p>
+      <p v-if="!dirty" class="profile__hint profile__hint--quiet">
+        账号名称与 UID 由系统分配，不支持修改。
+      </p>
+
+      <!-- 我的动态 -->
+      <template v-if="postCount > 0">
+        <div class="profile__section-title">我的动态</div>
+        <button class="profile__row" type="button" @click="openMyPosts">
+          <span class="profile__row-icon"><AppIcon name="compass" :size="18" /></span>
+          <span class="profile__row-main">
+            <span class="profile__row-label">我发布的动态</span>
+            <span class="profile__row-sub">共 {{ postCount }} 条</span>
+          </span>
+          <span class="profile__row-chev" aria-hidden="true">
+            <AppIcon name="expand-more" :size="16" />
+          </span>
+        </button>
+      </template>
+
+      <!-- 账号与安全 -->
+      <div class="profile__section-title">账号与安全</div>
+      <button
+        class="profile__row"
+        type="button"
+        :aria-expanded="themeOpen"
+        aria-controls="profile-theme-panel"
+        @click="toggleThemePanel"
+      >
+        <span class="profile__row-icon"><AppIcon name="sun" :size="18" /></span>
+        <span class="profile__row-main">
+          <span class="profile__row-label">主题</span>
+          <span class="profile__row-sub">{{ themeName }}</span>
+        </span>
+        <span class="profile__row-chev" :class="{ 'profile__row-chev--open': themeOpen }" aria-hidden="true">
+          <AppIcon name="expand-more" :size="16" />
+        </span>
+      </button>
+
+      <div v-if="themeOpen" id="profile-theme-panel" class="profile__theme" :class="{ 'profile__theme--full': isMobile }">
+        <div v-if="isMobile" class="profile__theme-head">
+          <span class="profile__theme-title">主题</span>
+          <button
+            class="profile__theme-close touch-target"
+            type="button"
+            aria-label="关闭主题选择"
+            @click="themeOpen = false"
+          >
+            <AppIcon name="close" :size="18" />
+          </button>
+        </div>
+        <ThemePicker :compact="isMobile" />
+      </div>
+
+      <button class="profile__row profile__row--danger" type="button" @click="openLogout">
+        <span class="profile__row-icon"><AppIcon name="logout" :size="18" /></span>
+        <span class="profile__row-main">
+          <span class="profile__row-label">退出登录</span>
+          <span class="profile__row-sub">退出后需要重新输入账号与密码</span>
+        </span>
+        <span class="profile__row-chev" aria-hidden="true">
+          <AppIcon name="expand-more" :size="16" />
+        </span>
+      </button>
+
+      <p class="profile__hint profile__hint--quiet">AI Trance v2 · 账号数据仅用于站内交流</p>
     </div>
+
+    <!-- 退出登录二次确认（UI-V2 §3 明确要求） -->
+    <AppModal title="退出登录" :open="logoutOpen" :width="380" @close="logoutOpen = false">
+      <p class="profile__confirm-text">退出后需要重新输入账号与密码才能继续使用，确定要退出吗？</p>
+      <template #footer>
+        <AppButton label="取消" tone="ghost" @click="logoutOpen = false" />
+        <AppButton label="退出登录" tone="danger" @click="confirmLogout" />
+      </template>
+    </AppModal>
   </section>
 </template>
 
@@ -348,6 +505,12 @@ async function copyUsername(): Promise<void> {
   flex-direction: column;
   min-width: 0;
   background: var(--app-panel);
+}
+/* embedded：抽屉 full 态复用，撑满抽屉高度但内部仍滚动 */
+.profile--embedded {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 .profile__head {
   display: flex;
@@ -577,6 +740,110 @@ async function copyUsername(): Promise<void> {
   display: flex;
   gap: 8px;
   margin-top: 20px;
+}
+
+/* ── 行式入口（我的动态 / 主题 / 退出登录） ── */
+.profile__row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: var(--spacing-touch-target);
+  padding: 9px 10px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel);
+  color: var(--app-text);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  margin-bottom: 8px;
+  transition: background var(--dur-fast, 0.15s) var(--ease-both, ease);
+}
+.profile__row:hover {
+  background: var(--app-hover);
+}
+.profile__row--danger .profile__row-label,
+.profile__row--danger .profile__row-icon {
+  color: var(--color-danger-500);
+}
+.profile__row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+}
+.profile__row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+.profile__row-label {
+  font-size: 13px;
+  color: var(--app-text);
+}
+.profile__row-sub {
+  font-size: 11px;
+  color: var(--app-text-faint);
+}
+.profile__row-chev {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  color: var(--app-text-faint);
+  transition: transform var(--dur-fast, 0.15s) var(--ease-both, ease);
+}
+.profile__row-chev--open {
+  transform: rotate(180deg);
+}
+.profile__theme {
+  margin: 4px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: 8px;
+  background: var(--app-panel-alt);
+}
+/* 移动端：全屏覆盖主题选择器（UI-V2 §3 / T6） */
+.profile__theme--full {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-sheet, 160);
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  padding: calc(12px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  overflow-y: auto;
+  background: var(--app-panel);
+}
+.profile__theme-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.profile__theme-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+.profile__theme-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--app-text-muted);
+  cursor: pointer;
+}
+.profile__confirm-text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--app-text-muted);
 }
 
 @media (max-width: 767px) {

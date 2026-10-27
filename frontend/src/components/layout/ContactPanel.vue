@@ -8,12 +8,14 @@ import AppEmpty from '@/components/base/AppEmpty.vue'
 import PresenceDot from '@/components/layout/PresenceDot.vue'
 import { useFriendStore } from '@/stores/friend'
 import { useConversationStore } from '@/stores/conversation'
+import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
 import { toApiError } from '@/api/http'
 import { useRouter } from 'vue-router'
 
 const friendStore = useFriendStore()
 const convStore = useConversationStore()
+const auth = useAuthStore()
 const ui = useUiStore()
 const router = useRouter()
 
@@ -43,6 +45,20 @@ async function openChat(userId: string): Promise<void> {
   } catch (e) {
     ui.toast(toApiError(e).message, 'error')
   }
+}
+
+/**
+ * 好友行内「点头像看资料」（v2 §3）。
+ * 行本身是 <button> 负责开会话，所以头像只能做成 role=button 的 span；
+ * 事件必须 stop，否则会连带触发整行的 openChat。
+ */
+function openUserProfile(userId: string): void {
+  if (!userId) return
+  if (userId === auth.userId) {
+    void router.push({ name: 'profile' })
+    return
+  }
+  void router.push({ name: 'user-profile', params: { userId } })
 }
 
 async function addFriend(userId: string): Promise<void> {
@@ -131,10 +147,24 @@ async function reject(id: string): Promise<void> {
           type="button"
           @click="openChat(f.user.id)"
         >
-          <div class="row__avatar">
-            <AppAvatar :name="f.user.displayName" :seed="f.user.id" :size="36" />
+          <!-- v2：头像单独可点 = 进访客资料；外层已是 button，这里只能用 role=button 的 span -->
+          <span
+            class="row__avatar row__avatar--btn"
+            role="button"
+            tabindex="0"
+            :aria-label="`查看 ${f.user.displayName} 的资料`"
+            @click.stop="openUserProfile(f.user.id)"
+            @keydown.enter.stop.prevent="openUserProfile(f.user.id)"
+            @keydown.space.stop.prevent="openUserProfile(f.user.id)"
+          >
+            <AppAvatar
+              :name="f.user.displayName"
+              :seed="f.user.id"
+              :size="36"
+              :src="f.user.avatarUrl ?? ''"
+            />
             <PresenceDot class="row__dot" :user-id="f.user.id" />
-          </div>
+          </span>
           <span class="row__name">{{ f.user.displayName }}</span>
           <span class="row__hint">发消息</span>
         </button>
@@ -280,7 +310,8 @@ async function reject(id: string): Promise<void> {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 14px;
+  /* 5px + 44px 热区 = 54px，与改造前（9px + 36px）行高一致 */
+  padding: 5px 14px;
   border: none;
   background: transparent;
   text-align: left;
@@ -297,6 +328,20 @@ async function reject(id: string): Promise<void> {
 .row__avatar {
   position: relative;
   flex: 0 0 auto;
+}
+/* v2：头像可点进访客资料。热区补到 44x44（e2e 会量 .row 的触控目标，头像子树也要达标） */
+.row__avatar--btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--spacing-touch-target);
+  height: var(--spacing-touch-target);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+}
+.row__avatar--btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
 }
 .row__dot {
   position: absolute;

@@ -42,6 +42,11 @@ function pinned(msgId: string, over: Partial<PinnedMessage> = {}): PinnedMessage
       seq: 1,
       type: 'text',
       content: `内容 ${msgId}`,
+      // v2 新形状：附件事必填（无附件是 `[]`），撤回国与引用国未激活
+      attachments: [],
+      recalled: false,
+      recalledAt: null,
+      replyTo: null,
       createdAt: '2026-10-22T00:00:00.000Z',
     },
     pinnedBy: { id: 'u-self', username: 'me', displayName: 'Me' },

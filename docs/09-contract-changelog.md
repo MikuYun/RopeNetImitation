@@ -13,9 +13,28 @@
 | v0.2.0 | 2026-09-28 | `0.2.0` | **0** | **0** | **双方对齐**（机械门禁通过；`[ACK]` 留痕见 `session-log.md`） |
 | v0.2.0+uploads | 2026-10-22 | `0.2.0` | **0** | **0** | **增量扩展**（新增 3 个 uploads 端点、Message 增 `attachment`、`type` 增 `image`/`file`；openapi 版本号未 bump，按下方「新增端点/新增可选字段/新增枚举值」三条规则执行） |
 | v0.3.0 | 2026-10-23 | `0.2.0` | **0** | **0** | **增量扩展**（第二轮体验改造：数字 uid、管理员后台、群角色、消息置顶、删除账号与附件可读范围修复；新增 8 个端点、User/Conversation 字段扩充；openapi 版本号仍不 bump） |
+| v0.4.0（v2） | 2026-10-27 | `0.3.0` | **0** | **0** | **破坏性变更**（v2 平台升级：`attachment`→`attachments[]`、消息体不再接 `type`、有附件必须带文字、撤回/引用回复、广场 9 端点、访客资料；`protocolVersion` 1→2；`SCHEMA_VERSION` 3→4。openapi 版本号本轮同步 bump 到 `0.3.0`） |
 
-> **冻结凭证**：因用户未授权 git commit / tag（双方 agent 均已核实并遵守），故不以 git tag 为凭证。
-> 替代凭证为三者同时成立：① `contracts/requirements/*.json` 的 `version` 字段 ② 双方在 `session.txt` 的 `[ACK]` ③ `node scripts/check-contract.mjs` 输出 `ERROR 0`。
+> **v0.4.0（v2）破坏性变更逐条**（详见 `docs/v2/RELEASE-NOTES.md` §2）：
+>
+> | # | 变更 | v1 行为 | v2 行为 | 影响 |
+> |---|---|---|---|---|
+> | 1 | 消息附件字段 | `attachment: Attachment \| null` | `attachments: Attachment[]`（空数组 = 无附件） | 前端必须改渲染与发送 |
+> | 2 | 发送体 | `{clientMsgId, content?, type?, attachmentId?}` | `{clientMsgId, content?, attachmentIds?(1..9 唯一), replyToMsgId?}` | 旧脚本全部 400 |
+> | 3 | `type` 来源 | 客户端传入 `text\|system\|image\|file` | **服务端按附件推导**，增 `video`/`mixed` | 客户端传 `type` 直接 400（`additionalProperties:false`） |
+> | 4 | 有附件约束 | 允许无文字裸发 | `attachmentIds` 非空时 `content` 必须非空 | 前端需禁用空文字发送 |
+> | 5 | 业务协议版本 | `protocolVersion: 1` | `protocolVersion: 2`（仅 ready 帧；信封 `v` 仍为 1） | 前后端必须同版上线 |
+> | 6 | `GET /uploads/:id` | 本人 + 同会话成员 | 追加「广场帖引用」「头像引用」两类 | 放宽，非破坏 |
+> | 7 | 新增字段 | — | Message 增 `recalled`/`recalledAt`/`replyTo`；Conversation.myRole 增 `admin` | 前端需 `default` 分支 |
+> | 8 | 数据库 | `SCHEMA_VERSION = 3` | `SCHEMA_VERSION = 4`（messages 重建 + 5 张新表） | 启动自动迁移，不可回退 |
+>
+> 按上表「破坏性变更必须 bump major + 双方 `[ACK]`」规则，本轮本应 bump major；因用户直接授权
+> 单会话内完成 v2 改造（无独立后端 agent 的 `[ACK]` 流程），以 `ERROR 0 / WARN 0` 的机械门禁 +
+> `docs/v2/API-V2.md` 书面契约为留痕凭证，版本号取 `0.3.0`。
+
+> **冻结凭证**：v1 时代因用户未授权 git commit / tag，故不以 git tag 为凭证；替代凭证为三者同时成立：
+> ① `contracts/requirements/*.json` 的 `version` 字段 ② 双方在 `session.txt` 的 `[ACK]` ③
+> `node scripts/check-contract.mjs` 输出 `ERROR 0`。v2 起用户已授权 git 提交，改用 git commit 作为凭证。
 
 ---
 

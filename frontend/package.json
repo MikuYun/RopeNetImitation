@@ -1,6 +1,6 @@
 {
   "name": "aitrance-chat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "aitrance-chat —— 类微信网页聊天平台前端",

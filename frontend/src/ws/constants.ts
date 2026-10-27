@@ -5,8 +5,21 @@
  * 基准：backend/API.md §6（v0.2.0）+ docs/contract/diff-report.md §2.5
  */
 
-/** 协议版本。与信封 v 字段比对；不匹配则服务端以 4002 关闭。 */
-export const WS_PROTOCOL_VERSION = 1 as const
+/**
+ * 信封 `v` 字段版本。
+ *
+ * 只用于两处：握手 URL 的 `?v=`（后端 `app.ts` 只接受 '1'）与入站信封 `env.v` 比对
+ * （不匹配则服务端以 4002 关闭）。**它不是业务协议版本**，不要因为升 API 就改它。
+ */
+export const WS_ENVELOPE_VERSION = 1 as const
+
+/**
+ * 业务协议版本（`ready.data.protocolVersion`）。
+ *
+ * 后端 0.3.0 起 ready 帧发 `protocolVersion: 2`，但信封 `v` 仍是 1 —— 两者是独立演进的
+ * 两件事，混用一个常量会让「升业务协议」把「信封校验」一起打死（表现为一连上就 4002 断连）。
+ */
+export const WS_PROTOCOL_VERSION = 2 as const
 
 /** 关闭码。基准：backend/API.md §6 关闭码表（v0.2.0）。 */
 export const WS_CLOSE = {

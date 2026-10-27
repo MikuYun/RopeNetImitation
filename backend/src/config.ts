@@ -50,6 +50,12 @@ export interface Config {
    */
   adminUid: number;
   /**
+   * 系统管理员的登录名（小写、3..32 位 [a-z0-9_]），默认 `root`。
+   * 与 adminUid 一起构成「root 一定是管理员」的稳定锚点：ensureAdmin 会先按 uid、
+   * 再按 username COLLATE NOCASE 查找，任一命中都会把该行纠正成 admin+adminUid。
+   */
+  adminUsername: string;
+  /**
    * 首次创建管理员时用的初始密码。只在「uid=adminUid 的用户不存在」时使用一次，
    * 之后重启一律不再读写它 —— 否则运维改过的密码会在每次重启时被这个环境变量覆盖回去。
    */
@@ -127,9 +133,15 @@ export function loadConfig(): Config {
   // 普通用户从 10001 起分配，所以这里只要不越界，管理员 uid 就永远不会和普通用户撞号。
   const adminUid = positiveInteger(process.env.ADMIN_UID, 1001, 9999);
   if (adminUid < 1000) throw new Error(`ADMIN_UID must be between 1000 and 9999: ${adminUid}`);
+  // 管理员的登录名，默认 root（契约 §7）。与普通用户同一套校验规则，
+  // 保证「管理员只能用合法 username 登录」这件事在配置层就成立。
+  const adminUsername = (process.env.ADMIN_USERNAME ?? 'root').trim().toLowerCase();
+  if (!/^[a-z0-9_]{3,32}$/.test(adminUsername)) {
+    throw new Error('ADMIN_USERNAME must be 3..32 characters of [a-z0-9_]');
+  }
   // 初始密码只在首次创建管理员时用一次。默认值写在契约里（便于首次部署直接可用），
   // 但运维应当通过 ADMIN_INITIAL_PASSWORD 覆盖；长度下限 8 与注册接口保持一致。
-  const adminInitialPassword = process.env.ADMIN_INITIAL_PASSWORD ?? 'A454545asd@';
+  const adminInitialPassword = process.env.ADMIN_INITIAL_PASSWORD ?? '12345678';
   if (adminInitialPassword.length < 8 || adminInitialPassword.length > 128) {
     throw new Error('ADMIN_INITIAL_PASSWORD must be 8..128 characters');
   }
@@ -159,6 +171,7 @@ export function loadConfig(): Config {
     retentionMessageDays: nonNegativeInteger(process.env.RETENTION_MESSAGE_DAYS, 0, 3650),
     uploadsDir,
     adminUid,
+    adminUsername,
     adminInitialPassword,
   };
 }

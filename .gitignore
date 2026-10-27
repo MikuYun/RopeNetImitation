@@ -61,3 +61,6 @@ coverage/
 .tb
 .ida
 .idb
+
+# 工具写盘遗留锁文件（0 字节，不入库）
+.dsh-ops-update-*.lock

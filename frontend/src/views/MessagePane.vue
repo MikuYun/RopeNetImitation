@@ -30,7 +30,9 @@ import { useBreakpoint, isElementVisible } from '@/composables/useBreakpoint'
 import { goBack } from '@/composables/useBackNavigation'
 import { fromNow, needsDateDivider, formatDateDivider } from '@/utils/datetime'
 import { toApiError } from '@/api/http'
-import type { LocalMessage, PinnedMessage } from '@/types/domain'
+import type { SendMessageInput } from '@/api/messages'
+import type { Attachment, LocalMessage, PinnedMessage, ReplyRef, WireMessage } from '@/types/domain'
+import { attachmentsPreviewText } from '@/utils/attachments'
 
 const props = defineProps<{ convId: string }>()
 
@@ -84,6 +86,22 @@ function nameOf(userId: string): string {
   if (f) return f.user.displayName
   const p = conversation.value?.peer
   if (p && p.id === userId) return p.displayName
+  return ''
+}
+
+/**
+ * 消息头/气泡旁的发送者头像（需求 1：头像必须在聊天界面里真实可见）。
+ *
+ * 与 `nameOf` 同一套查找顺序：群成员详情 → 好友列表 → 单聊 peer。
+ * 返回空串表示「查不到头像」，MessageBubble 会退回首字母，不会破图。
+ */
+function avatarOf(userId: string): string {
+  const m = detail.value?.members.find((x) => x.user.id === userId)
+  if (m) return m.user.avatarUrl ?? ''
+  const f = friendStore.friends.find((x) => x.user.id === userId)
+  if (f) return f.user.avatarUrl ?? ''
+  const p = conversation.value?.peer
+  if (p && p.id === userId) return p.avatarUrl ?? ''
   return ''
 }
 
@@ -262,17 +280,18 @@ const pinnedIds = computed(() => new Set(pinnedList.value.map((p) => p.message.m
  * 置顶条里显示的摘要文本。
  *
  * 置顶条只有一行宽度，正文可能很长；图片/文件消息正文可能为空。所以：
- *   - 附件 → 用「[图片] / [文件] 文件名」占位（否则显示空白条）
+ *   - 附件 → 用 `attachmentsPreviewText` 的占位（`[图片]` / `[视频]` / `[文件] 名`），
+ *     否则显示空白条
  *   - 空正文 → 兜底「（无正文）」
  * 完整内容由点击跳转去看，这里不做任何截断以外的加工。
  */
 function pinText(pin: PinnedMessage): string {
   const m = pin.message
+  if (m.recalled) return '（已撤回）'
   const body = m.content.trim()
   if (body) return body.replace(/\s+/g, ' ')
-  if (m.attachment) {
-    return m.attachment.kind === 'image' ? '[图片]' : `[文件] ${m.attachment.name}`
-  }
+  const preview = attachmentsPreviewText(m.attachments ?? [])
+  if (preview) return preview
   return '（无正文）'
 }
 
@@ -379,20 +398,27 @@ onUnmounted(() => {
 /**
  * 发送消息。
  *
- * payload 来自 MessageComposer：
- *   - 纯文本：`content` 带上 `type: 'text'`（灰度：旧后端要求 type 必填）
- *   - 附件：不带 type，改带 `attachmentId`，服务端按 upload.kind 推导消息类型
+ * payload 来自 MessageComposer：`{ content, attachments, replyToMsgId }`。
  *
- * 乐观消息与最终确认消息的 type 由 store/normalize 统一推导，这里不重复判断。
+ * 【为什么 content 与 attachmentIds 一起传】v1 的实现在有附件时**丢掉了 content**，
+ * 只发 `attachmentId`，于是「图片 + 文字」里的文字凭空消失（这正是本次要修的 bug）。
+ * v2 契约本身就要求「有附件必须带非空 content」，两者从来不是二选一。
+ *
+ * 乐观消息与最终确认消息的 type 由 store/normalize 按附件统一推导，这里不重复判断。
  */
 async function onSend(payload: ComposerSendPayload): Promise<void> {
-  const { content, attachment } = payload
+  const { content, attachments } = payload
+  const replyToMsgId = payload.replyToMsgId
+  const replyTo = buildReplyRef(replyToMsgId)
+
   const local = msgStore.appendOptimistic({
     conversationId: props.convId,
     senderId: auth.userId,
     content,
-    attachment: attachment ?? null,
+    attachments,
+    replyTo,
   })
+  replyTarget.value = null
   await nextTick()
   scrollToBottom()
 
@@ -401,30 +427,11 @@ async function onSend(payload: ComposerSendPayload): Promise<void> {
     const { sendMessage } = await import('@/api/messages')
     const confirmed = await sendMessage(
       props.convId,
-      attachment
-        ? { clientMsgId: local.clientMsgId ?? '', attachmentId: attachment.id }
-        : { clientMsgId: local.clientMsgId ?? '', type: 'text', content },
+      buildSendInput(local.clientMsgId ?? '', content, attachments, replyToMsgId),
     )
     // insertOrIgnore 会按 clientMsgId 兑现并移除乐观消息
     msgStore.insertOrIgnore(confirmed)
-    const conv = conversation.value
-    if (conv && confirmed.seq > conv.lastSeq) {
-      convStore.upsertSummary(
-        {
-          ...conv,
-          lastMessage: {
-            type: confirmed.type,
-            content: confirmed.content,
-            senderId: auth.userId,
-            seq: confirmed.seq,
-            attachmentKind: confirmed.attachment?.kind ?? null,
-          },
-          lastSeq: confirmed.seq,
-          updatedAt: confirmed.createdAt,
-        },
-        { keepPosition: true },
-      )
-    }
+    applyConfirmedSummary(confirmed)
   } catch (e) {
     const err = toApiError(e)
     msgStore.markFailed(props.convId, local.clientMsgId ?? '', err.code)
@@ -432,23 +439,213 @@ async function onSend(payload: ComposerSendPayload): Promise<void> {
   }
 }
 
+/** 组发送请求体：只放存在的字段（后端 additionalProperties:false）。 */
+function buildSendInput(
+  clientMsgId: string,
+  content: string,
+  attachments: Attachment[],
+  replyToMsgId: string | null,
+): SendMessageInput {
+  const input: SendMessageInput = { clientMsgId, content }
+  if (attachments.length > 0) input.attachmentIds = attachments.map((a) => a.id)
+  if (replyToMsgId) input.replyToMsgId = replyToMsgId
+  return input
+}
+
+/** 用本地已有消息拼一个引用引用信息（服务端回包会用权威值覆盖）。 */
+function buildReplyRef(msgId: string | null): ReplyRef | null {
+  if (!msgId) return null
+  const target = messages.value.find((m) => (m.msgId || m.localId) === msgId)
+  if (!target) return null
+  const preview =
+    target.content.trim().replace(/\s+/g, ' ') || attachmentsPreviewText(target.attachments ?? [])
+  return {
+    msgId: target.msgId || target.localId,
+    senderId: target.senderId,
+    senderName: nameOf(target.senderId) || (target.senderId === auth.userId ? '你' : '对方'),
+    preview: preview.length > 80 ? `${preview.slice(0, 80)}…` : preview,
+  }
+}
+
+/** 把已确认消息的最新状态同步到会话列表的 lastMessage。 */
+function applyConfirmedSummary(confirmed: WireMessage): void {
+  const conv = conversation.value
+  if (!conv || confirmed.seq === null || confirmed.seq <= conv.lastSeq) return
+  convStore.upsertSummary(
+    {
+      ...conv,
+      lastMessage: {
+        type: confirmed.type,
+        content: confirmed.content,
+        senderId: auth.userId,
+        seq: confirmed.seq,
+        attachmentKind: confirmed.attachments?.[0]?.kind ?? null,
+      },
+      lastSeq: confirmed.seq,
+      updatedAt: confirmed.createdAt,
+    },
+    { keepPosition: true },
+  )
+}
+
+/**
+ * 失败重试。附件已经上传成功，只需把同一批 uploadId 再挂一次；正文照旧带上。
+ */
 async function retry(msg: LocalMessage): Promise<void> {
   if (!msg.clientMsgId) return
   msgStore.markRetrying(props.convId, msg.clientMsgId)
   try {
     const { sendMessage } = await import('@/api/messages')
-    // 重试不能拿「我这条失败消息」里的 attachment 就重传：附件已经上传成功，
-    // 只需要把同一个 uploadId 再挂一次。纯文本则按原 content 重发。
     const confirmed = await sendMessage(
       props.convId,
-      msg.attachment
-        ? { clientMsgId: msg.clientMsgId, attachmentId: msg.attachment.id }
-        : { clientMsgId: msg.clientMsgId, type: 'text', content: msg.content },
+      buildSendInput(
+        msg.clientMsgId,
+        msg.content,
+        msg.attachments ?? [],
+        msg.replyTo?.msgId ?? null,
+      ),
     )
     msgStore.insertOrIgnore(confirmed)
+    applyConfirmedSummary(confirmed)
   } catch (e) {
     msgStore.markFailed(props.convId, msg.clientMsgId, toApiError(e).code)
   }
+}
+
+// ── 引用回复（v2） ──────────────────────────────────────────────────
+/**
+ * 当前引用目标。
+ *
+ * 状态放在这里而不是 composer 内部：点「回复」发生在气泡上，渲染在输入框上，
+ * 父级是两侧共同的真相源（composer 只接 props + emit cancelReply）。
+ */
+const replyTarget = ref<ReplyRef | null>(null)
+
+function onReply(msgId: string): void {
+  const ref_ = buildReplyRef(msgId)
+  if (!ref_) {
+    ui.toast('被引用的消息已不在此会话', 'info')
+    return
+  }
+  replyTarget.value = ref_
+}
+
+function cancelReply(): void {
+  replyTarget.value = null
+}
+
+/** 点击引用条：滚动定位到被引用的消息并短暂高亮。 */
+function onJumpTo(msgId: string): void {
+  if (!msgId) return
+  void jumpToMessage(msgId)
+}
+
+/**
+ * 滚动定位到某条消息。
+ *
+ * 与 `jumpToPinned` 的差别只在「找不到时的兜底」：引用目标可能是更早的历史，
+ * 这里也用 ensureLoaded 补一页再试。高亮复用 `.pane__row--flash`。
+ */
+async function jumpToMessage(msgId: string): Promise<void> {
+  const scroll = scroller.value
+  if (!scroll) return
+  let node = scroll.querySelector<HTMLElement>(`[data-msg-id="${cssEscape(msgId)}"]`)
+  if (!node) {
+    await msgStore.ensureLoaded(props.convId, 30)
+    await nextTick()
+    node = scroll.querySelector<HTMLElement>(`[data-msg-id="${cssEscape(msgId)}"]`)
+  }
+  if (!node) {
+    ui.toast('这条消息已不在当前会话', 'info')
+    return
+  }
+  node.scrollIntoView({ block: 'center', behavior: 'smooth' })
+  node.classList.add('pane__row--flash')
+  if (highlightTimer !== null) window.clearTimeout(highlightTimer)
+  highlightTimer = window.setTimeout(() => {
+    node?.classList.remove('pane__row--flash')
+    highlightTimer = null
+  }, HIGHLIGHT_MS)
+}
+
+// ── 撤回（v2） ──────────────────────────────────────────────────────
+/**
+ * 撤回一条自己发的消息。
+ *
+ * 服务端只允许作者本人、且 120 秒内（`RECALL_WINDOW_EXPIRED`）。成功后**必须**用
+ * 返回的消息走 `upsertMessage` 覆盖本地：撤回不是删除，而是同一条消息的新版本
+ * （正文清空、附件清空、recalled=true），用 `insertOrIgnore` 会被旧缓存挡住。
+ * 置顶列表里可能缓存了同一条消息的旧副本，也要一并脱敏。
+ */
+async function onRecall(msgId: string): Promise<void> {
+  if (!msgId) return
+  try {
+    const { recallMessage } = await import('@/api/messages')
+    const recalled = await recallMessage(props.convId, msgId)
+    msgStore.upsertMessage(recalled)
+    sanitizePinned(recalled.msgId, recalled)
+    applyRecalledSummary(recalled)
+    ui.toast('已撤回', 'info')
+  } catch (e) {
+    const err = toApiError(e)
+    if (err.code === 'RECALL_WINDOW_EXPIRED') ui.toast('超过 2 分钟，无法撤回', 'error')
+    else if (err.code === 'FORBIDDEN') ui.toast('只能撤回自己发送的消息', 'error')
+    else if (err.code === 'MESSAGE_NOT_FOUND') ui.toast('这条消息已不存在', 'error')
+    else ui.toast(`撤回失败：${err.message}`, 'error')
+  }
+}
+
+/**
+ * 点对方头像 → 打开访客资料页（需求 2）。
+ *
+ * 复用已有 `user-profile` 路由；目标是自己时不做特殊处理 ——
+ * `UserProfileView` 内部按 `relationship === 'self'` 自动降级为「我的资料」形态。
+ */
+function onOpenProfile(userId: string): void {
+  if (!userId) return
+  void router.push({ name: 'user-profile', params: { userId } })
+}
+
+/** 置顶缓存里的同一条消息也要换成脱敏版本，否则置顶条仍显示旧正文。 */
+function sanitizePinned(msgId: string, message: WireMessage): void {
+  const list = pinsStore.pinsOf(props.convId)
+  if (list.length === 0) return
+  let changed = false
+  const next = list.map((p) => {
+    if (p.message.msgId !== msgId) return p
+    changed = true
+    // 置顶缓存里的是领域 WireMessage（seq 非空），撤回回包也是，可直接替换
+    return { ...p, message }
+  })
+  if (changed) pinsStore.applyFromWs(props.convId, next)
+}
+
+/**
+ * 撤回后同步会话列表的预览。
+ *
+ * 服务端撤回不会推 `conversation.updated`（只有 `message.updated`），如果不本地改，
+ * 左列表会一直显示被撤回的原文 —— 那是撤回功能最不能接受的泄露。
+ * 这里不按 seq 比较（撤回的往往不是最后一条，但可能是）：只要 seq 等于当前
+ * lastSeq 就替换。
+ */
+function applyRecalledSummary(recalled: WireMessage): void {
+  const conv = conversation.value
+  if (!conv || !conv.lastMessage || recalled.seq === null) return
+  if (conv.lastMessage.seq !== recalled.seq) return
+  convStore.upsertSummary(
+    {
+      ...conv,
+      lastMessage: {
+        type: 'text',
+        // 后端撤回后 content 是空串，直接显示会变成「我：」；这里给一句明确文案
+        content: '消息已撤回',
+        senderId: conv.lastMessage.senderId,
+        seq: recalled.seq,
+        attachmentKind: null,
+      },
+    },
+    { keepPosition: true },
+  )
 }
 
 async function openInfo(): Promise<void> {
@@ -677,11 +874,16 @@ watch(
               :conv-type="conversation.type"
               :sender-name="nameOf(row.msg.senderId)"
               :sender-id="row.msg.senderId"
+              :sender-avatar="avatarOf(row.msg.senderId)"
               :read-by-peer="readByPeer(row.msg)"
               :read-count="readCountOf(row.msg)"
               :pinned="isPinnedMsg(row.msg)"
               @pin="onPin"
               @unpin="onUnpin"
+              @jump-to="onJumpTo"
+              @reply="onReply"
+              @recall="onRecall"
+              @open-profile="onOpenProfile"
             />
             <button
               v-if="row.msg.status === 'failed'"
@@ -722,7 +924,12 @@ watch(
         <span v-if="unseen > 0" class="pane__jump-text">{{ unseen }} 条新消息</span>
       </button>
 
-      <MessageComposer :conversation-id="convId" @send="onSend" />
+      <MessageComposer
+        :conversation-id="convId"
+        :reply-target="replyTarget"
+        @send="onSend"
+        @cancel-reply="cancelReply"
+      />
     </template>
   </section>
 </template>
@@ -802,6 +1009,11 @@ watch(
   overscroll-behavior: contain;
   padding: 16px 18px 8px;
   min-height: 0;
+  /* 聊天背景图。--chat-canvas 是纯色底，--chat-canvas-image 由主题按 bgMode
+   * 给出（纯色时为 none / 渐变时为 linear-gradient / 图片时为 url(...)）。
+   * 两者必须成对出现：只吃纯色的话，自定义渐变/图片背景在有消息的会话里会消失。 */
+  background-color: var(--chat-canvas);
+  background-image: var(--chat-canvas-image);
 }
 .pane__loading {
   margin-bottom: 8px;

@@ -39,7 +39,11 @@ export const CONTENT_SECURITY_POLICY = [
   "style-src 'self'",
   // blob: 是附件预览必需的：图片经 fetch(带 Bearer) 取回字节后要转成 blob: URL 才能塞进 <img>。
   // 直接指向 /api/v1/uploads/:id 不行（<img> 不会带 Authorization 头），所以只能走 blob:。
-  "img-src 'self' data: blob:",
+  // https: 只用于用户资料里的外链头像（User.avatarUrl 允许 https 绝对地址，见 resolveAvatarUrl）。
+  "img-src 'self' data: blob: https:",
+  // v2 视频附件：<video src> 同样只能用 blob:（鉴权同上），media-src 缺省会回落到 default-src 'self'，
+  // 那样 blob 视频会被拦掉，所以这里必须显式放开 blob:。
+  "media-src 'self' blob:",
   "font-src 'self'",
   "connect-src 'self' ws: wss:",
 ].join('; ');
@@ -119,7 +123,7 @@ export async function buildApp(overrides: Partial<Config> = {}) {
       redact: ['req.headers.authorization'],
       serializers: { req: request => ({ method: request.method, url: request.url?.split('?')[0], remoteAddress: request.ip }) },
     },
-    bodyLimit: 32 * 1024,
+    bodyLimit: 64 * 1024,
     ajv: { customOptions: { removeAdditional: false } },
     requestTimeout: 30_000,
     trustProxy: config.trustLoopbackProxy ? 'loopback' : false,
@@ -191,7 +195,7 @@ export async function buildApp(overrides: Partial<Config> = {}) {
   await app.register(swagger, {
     openapi: {
       openapi: '3.0.3',
-      info: { title: 'WebChat API', version: '0.2.0', description: '网页聊天 MVP：账号、好友、私聊/群聊及实时消息。WebSocket 协议见 API.md。' },
+      info: { title: 'WebChat API', version: '0.3.0', description: '网页聊天 MVP：账号、好友、私聊/群聊及实时消息。WebSocket 协议见 API.md。' },
       servers: [{ url: `http://localhost:${config.port}` }],
       components: { securitySchemes: { bearerAuth: { type: 'http', scheme: 'bearer', description: '注册或登录返回的 opaque token' } } },
     },
@@ -201,11 +205,11 @@ export async function buildApp(overrides: Partial<Config> = {}) {
   app.addHook('onClose', async () => store.close());
   await app.register(websocket, { options: { maxPayload: 4096 } });
   const healthSchema = { tags: ['System'], summary: '版本与协议健康检查', response: { 200: Type.Object({
-    status: Type.Literal('ok'), version: Type.Literal('0.2.0'), protocolVersion: Type.Literal(1), serverTime: Type.String({ format: 'date-time' }),
+    status: Type.Literal('ok'), version: Type.Literal('0.3.0'), protocolVersion: Type.Literal(2), serverTime: Type.String({ format: 'date-time' }),
   }) } };
   const health = async () => {
     store.get('SELECT 1');
-    return { status: 'ok' as const, version: '0.2.0' as const, protocolVersion: 1 as const, serverTime: new Date().toISOString() };
+    return { status: 'ok' as const, version: '0.3.0' as const, protocolVersion: 2 as const, serverTime: new Date().toISOString() };
   };
   app.get('/health', { schema: healthSchema }, health);
   app.get('/api/v1/health', { schema: healthSchema }, health);

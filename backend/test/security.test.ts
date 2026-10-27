@@ -110,7 +110,7 @@ test('SEC-01 HTTPS mode terminates TLS in-process and keeps health/API/headers i
   assert.ok(address && typeof address === 'object');
   const health = await httpsRequestProbe(address.port, '/health');
   assert.equal(health.status, 200);
-  assert.equal(JSON.parse(health.body).protocolVersion, 1);
+  assert.equal(JSON.parse(health.body).protocolVersion, 2);
   // 直连 TLS ⇒ 视为加密传输，凭据接口放行（注册成功即证明未被 403 拦下）。
   const created = await httpsRequestProbe(address.port, '/api/v1/auth/register', 'POST',
     JSON.stringify({ username: 'tlsuser', displayName: 'TLS 用户', password: 'correct-password-123' }), { 'content-type': 'application/json' });
@@ -184,8 +184,8 @@ test('SEC-04 security headers are present, stable and do not break /docs or /ope
     'referrer-policy': 'same-origin',
     'cache-control': 'no-store',
     'content-security-policy': "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; "
-      + "object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; "
-      + "connect-src 'self' ws: wss:",
+      + "object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; "
+      + "media-src 'self' blob:; font-src 'self'; connect-src 'self' ws: wss:",
     'permissions-policy': 'accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()',
   };
   for (const path of ['/health', '/api/v1/health', '/api/v1/users/me', '/openapi.json']) {
@@ -207,7 +207,7 @@ test('SEC-04 security headers are present, stable and do not break /docs or /ope
     assert.match(csp, /connect-src 'self' ws: wss:/);
   }
   const openapi = await call(backend, 'GET', '/openapi.json');
-  assert.equal(openapi.json().info.version, '0.2.0');
+  assert.equal(openapi.json().info.version, '0.3.0');
   assert.ok(openapi.json().paths['/api/v1/sync']);
   // 业务 API 的 CSP 不允许 inline script —— 这是 XSS 的第二道防线（docs/06 §5.3）。
   const api = await call(backend, 'GET', '/api/v1/health');

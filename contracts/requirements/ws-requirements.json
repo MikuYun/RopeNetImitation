@@ -2,8 +2,8 @@
   "$comment": "aitrance-chat WebSocket 协议需求书 v0.3.0。事实源为 backend/API.md 第 6 节与 backend/openapi.json 0.2.0。v0.1.0 中我方自拟的 5 个 C→S 帧与 18 个 S→C 帧已被后端实现收敛为 2 个 C→S 帧与 12 个 S→C 帧；发送消息与已读改走 REST，不存在 WS 发消息 ack。本文件记录后端实际帧集 + 前端对每帧的依赖强度 + 前端强制纪律。 v0.3.0（第二轮体验改造）新增第 13 个 S→C 帧 conversation.pins（置顶变化广播），并放宽附件可读范围；帧名/envelope/心跳/close code 一律未变。 本轮（上传能力）仅扩展 message.created 的 data.message 语义（type 增加 image/file、新增 attachment 字段），协议帧名、envelope、心跳、close code 均未变。",
   "version": "0.3.0",
   "supersedes": "0.2.0",
-  "protocolVersion": 1,
-  "openapiVersion": "0.2.0",
+  "protocolVersion": 2,
+  "openapiVersion": "0.3.0",
   "sourceOfTruth": "backend/API.md 第 6 节",
   "path": "/ws",
   "urlShape": "ws://127.0.0.1:3001/ws?ticket=<ticket>&v=1",
@@ -142,13 +142,13 @@
             "description": "ISO 8601 UTC；与信封 timestamp 相同。前端优先用它做时钟偏移，缺失才退回信封 timestamp"
           },
           "protocolVersion": {
-            "const": 1,
-            "description": "信封协议版本，固定数字 1。注意区别于实现版本 0.2.0；不匹配则前端停重连并提示刷新"
+            "const": 2,
+            "description": "业务协议版本，固定数字 2（v2 起：多附件、撤回、引用回复、广场）。注意区别于信封版本 envelope.v（仍固定 1）与实现版本 0.3.0；不匹配则前端停重连并提示刷新"
           }
         }
       },
-      "frontendReaction": "取 data.serverTime（缺失退回信封 timestamp）做时钟偏移校正；若 data.protocolVersion 存在且 !== 1，停重连并提示刷新；重置退避计数；随后启动补偿编排（见 compensationFlow）。",
-      "diff": "v0.1 拟 ready 携带 connectionId/serverTime/protocolVersion/heartbeatIntervalMs/sessionExpiresAt/features。后端 v0.2.0 ACT（已落地）为 {userId,serverTime,protocolVersion:1} —— serverTime 与 protocolVersion 已采纳，其余三项未采纳。",
+      "frontendReaction": "取 data.serverTime（缺失退回信封 timestamp）做时钟偏移校正；若 data.protocolVersion 存在且 !== 2，停重连并提示刷新；重置退避计数；随后启动补偿编排（见 compensationFlow）。",
+      "diff": "v0.1 拟 ready 携带 connectionId/serverTime/protocolVersion/heartbeatIntervalMs/sessionExpiresAt/features。后端 v0.3.0 ACT（已落地）为 {userId,serverTime,protocolVersion:2} —— serverTime 与 protocolVersion 已采纳，其余三项未采纳。前端以 WS_ENVELOPE_VERSION=1 校验信封 v 与握手 ?v=，以 WS_PROTOCOL_VERSION=2 校验 data.protocolVersion，两者不可混用。",
       "gap": "【降级项】因无 heartbeatIntervalMs，前端使用自己的常量 25s；因无 sessionExpiresAt，前端只用本地 localStorage 的 expiresAt 做续期调度；因无 features，前端不做特性降级，按全功能渲染 —— 若后端某能力未实现，靠 REST 错误码降级。非阻塞项。"
     },
     {

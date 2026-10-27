@@ -241,9 +241,9 @@ async function sendAs(username, convId, content, clientMsgId) {
   const r = await fetch(`${BACKEND}/api/v1/conversations/${convId}/messages`, {
     method: 'POST',
     headers: H(t.token),
+    // v2 契约 §2：body 不再接受 type（additionalProperties:false → 传了直接 400）。
     body: JSON.stringify({
       clientMsgId: clientMsgId ?? crypto.randomUUID(),
-      type: 'text',
       content,
     }),
   })
@@ -741,7 +741,6 @@ async function main() {
     const t = await tokenOf('gate_c')
     const again = await jpost(`/api/v1/conversations/${convAC}/messages`, t.token, {
       clientMsgId: cmid,
-      type: 'text',
       content: idemText,
     })
     check('幂等：同 clientMsgId 重发返回 200（非 201）', again.status === 200, `status=${again.status}`)
@@ -1200,7 +1199,7 @@ async function main() {
       }
       // 抗限流守卫（只加等待/重试，判据与条数一条不变）：
       // 撞上全局限流时，冷启动的 fetchSession 会被 429 → 静默跳登录页，这次 goto 的详情请求
-      // 一次都不会发出（delayed=0），随后 `.rail__tab[title="退出登录"]` 也点不到，
+      // 一次都不会发出（delayed=0），随后 `.rail__avatar`（个人信息入口）也点不到，
       // 旧写法会以 30s locator 超时异常中断整轮（FE-04 后面 30 条一条都跑不到）。
       // 现在的做法：等窗口滑过 + 重新登录进外壳 + 重装拦截 + 重试 goto，最多 3 次；
       // 仍不成立时把「前置」如实判 FAIL、把依赖它的 3 条判 SKIP（与本脚本其它段的前置守卫同风格），
@@ -1222,12 +1221,22 @@ async function main() {
       }
       check('前置：确实发出了被延迟的详情请求', fired, `delayed=${delayed}`)
       // 点开退出登录用短超时 + 容错：拿不到外壳时只跳过本段依赖断言，不让异常炸掉整轮
+      // v2 起退出登录从「侧栏底部按钮」移进「个人信息抽屉」（需求 1）：
+      //   .rail__avatar → .pdrawer → .pdrawer__entry--danger → AppModal 二次确认 → 退出登录
       const logoutOpened =
         fired &&
         (await page
-          .locator('.rail__tab[title="退出登录"]')
+          .locator('.rail__avatar')
           .click({ timeout: 10_000 })
-          .then(() => true)
+          .then(async () => {
+            await page.waitForSelector('.pdrawer', { timeout: 8_000 })
+            await page.locator('.pdrawer__entry--danger').click({ timeout: 5_000 })
+            await page.waitForSelector('.mask .panel', { timeout: 8_000 })
+            await page
+              .locator('.mask .panel__foot .btn', { hasText: '退出登录' })
+              .click({ timeout: 5_000 })
+            return true
+          })
           .catch(() => false))
       if (!logoutOpened) {
         const why = fired ? '前置未成立：外壳内找不到退出登录入口' : '前置未成立：详情请求未发出（冷启动限流噪声）'
@@ -1379,14 +1388,19 @@ async function main() {
       }
     }
 
-    /* 7) 手机「更多」面板：Esc / Tab 焦点管理。
+    /* 7) 手机「个人信息」面板：Esc / Tab 焦点管理。
      *
      * 修复复验（frontend-core 2026-10-22 13:39 改 MobileNav.vue + dialogA11y.ts）：原为
      * checkProduct 预期 DEFECT，现全部改为**真断言**（用 check，失败即计入退出码）：
-     *   - Tab 不逃逸：断言焦点在 `.sheet` 可聚焦列表里的**精确下标**（末尾 Tab → 0，
+     *   - Tab 不逃逸：断言焦点在 `.psheet` 可聚焦列表里的**精确下标**（末尾 Tab → 0，
      *     首个 Shift+Tab → count-1），而不是以前的「还在容器内就行」；
-     *   - Esc 可关闭：断言 `.sheet` 节点从 DOM 移除（v-if）且焦点归还触发按钮。
+     *   - Esc 可关闭：断言 `.psheet` 节点从 DOM 移除（v-if）且焦点归还触发按钮。
      * 这样就不会出现「修好后流程变化便默认 SKIP」的掩盖。
+     *
+     * v2 变更（需求 1）：`MobileNav` 第三位由「更多」面板改为「个人信息」，
+     * 原 `.sheet` / `.sheet__item` / `.sheet__cancel` 全部消失，等价物是
+     * `ProfileSheet.vue` 的 `.psheet` / `.psheet__entry` / `.psheet__close`
+     * （焦点管理仍复用 `utils/dialogA11y` 的同一份判定，所以判据本身不变）。
      */
     {
       const ctx = await browser.newContext({
@@ -1400,67 +1414,67 @@ async function main() {
       const shellOk = await ensureShell(page)
       if (!shellOk) {
         for (const n of [
-          '手机「更多」面板可打开',
-          '手机「更多」面板打开时焦点自动进入面板',
-          '手机「更多」面板 Tab 在末尾循环回首个（不逃逸）',
-          '手机「更多」面板 Shift+Tab 在首个循环到末尾',
-          '手机「更多」面板 Esc 可关闭（节点从 DOM 移除）',
-          '手机「更多」面板 Esc 关闭后焦点归还「更多」触发件',
-          '手机「更多」面板可关闭（取消）',
+          '手机「个人信息」面板可打开',
+          '手机「个人信息」面板打开时焦点自动进入面板',
+          '手机「个人信息」面板 Tab 在末尾循环回首个（不逃逸）',
+          '手机「个人信息」面板 Shift+Tab 在首个循环到末尾',
+          '手机「个人信息」面板 Esc 可关闭（节点从 DOM 移除）',
+          '手机「个人信息」面板 Esc 关闭后焦点归还「个人信息」触发件',
+          '手机「个人信息」面板可关闭（关闭按钮）',
         ]) skip(n, '前置失败：外壳未就绪（限流）')
         await ctx.close()
       } else {
-      const moreBtn = page.locator('.mnav__tab').nth(2)
-      await moreBtn.click()
-      await page.waitForSelector('.sheet', { timeout: 10_000 })
+      const profileBtn = page.locator('.mnav__tab').nth(2)
+      await profileBtn.click()
+      await page.waitForSelector('.psheet', { timeout: 10_000 })
       await page.waitForTimeout(400)
-      check('手机「更多」面板可打开', await page.locator('.sheet').isVisible())
+      check('手机「个人信息」面板可打开', await page.locator('.psheet').isVisible())
       /* ① 打开瞬间焦点自动进入面板，且落在首个可聚焦元素。 */
-      const sheetFocus = await activeIn(page, '.sheet')
-      const sheetIdx = await focusedIndexIn(page, '.sheet')
-      check('手机「更多」面板打开时焦点自动进入面板',
+      const sheetFocus = await activeIn(page, '.psheet')
+      const sheetIdx = await focusedIndexIn(page, '.psheet')
+      check('手机「个人信息」面板打开时焦点自动进入面板',
         sheetFocus.inside && sheetIdx.index === 0,
         `焦点=${sheetFocus.tag}/${sheetFocus.label} index=${sheetIdx.index}/${sheetIdx.count}`)
       /* ② Tab 焦点不逃逸：精确断言末尾 → 首个、首个 → 末尾。 */
-      const sheetFs = await focusables(page, '.sheet')
-      await focusNth(page, '.sheet', -1)
+      const sheetFs = await focusables(page, '.psheet')
+      await focusNth(page, '.psheet', -1)
       await page.keyboard.press('Tab')
       await page.waitForTimeout(200)
-      const sTab = await focusedIndexIn(page, '.sheet')
-      check('手机「更多」面板 Tab 在末尾循环回首个（不逃逸）',
+      const sTab = await focusedIndexIn(page, '.psheet')
+      check('手机「个人信息」面板 Tab 在末尾循环回首个（不逃逸）',
         sTab.count >= 3 && sTab.index === 0,
         `index=${sTab.index}/${sTab.count} 可聚焦=${sheetFs.join(' | ')}`)
-      await focusNth(page, '.sheet', 0)
+      await focusNth(page, '.psheet', 0)
       await page.keyboard.press('Shift+Tab')
       await page.waitForTimeout(200)
-      const sShift = await focusedIndexIn(page, '.sheet')
-      check('手机「更多」面板 Shift+Tab 在首个循环到末尾',
+      const sShift = await focusedIndexIn(page, '.psheet')
+      check('手机「个人信息」面板 Shift+Tab 在首个循环到末尾',
         sShift.count >= 3 && sShift.index === sShift.count - 1,
         `index=${sShift.index}/${sShift.count}`)
       await shot(page, 'fe04-mobile-sheet')
       /* ③ Esc 关闭：断言节点移除 + 焦点归还触发按钮。 */
       await page.keyboard.press('Escape')
-      const escClosed = await until(async () => (await page.locator('.sheet').count()) === 0, 6_000)
-      check('手机「更多」面板 Esc 可关闭（节点从 DOM 移除）', escClosed,
-        `元素数=${await page.locator('.sheet').count()}`)
+      const escClosed = await until(async () => (await page.locator('.psheet').count()) === 0, 6_000)
+      check('手机「个人信息」面板 Esc 可关闭（节点从 DOM 移除）', escClosed,
+        `元素数=${await page.locator('.psheet').count()}`)
       await page.waitForTimeout(400)
       const sheetReturned = await page.evaluate(() => {
         const tabs = [...document.querySelectorAll('.mnav__tab')]
         const a = document.activeElement
         return {
-          isMoreTab: tabs.length >= 3 && a === tabs[2],
+          isProfileTab: tabs.length >= 3 && a === tabs[2],
           label: (a?.textContent ?? '').trim().slice(0, 16),
           tag: a?.tagName ?? '',
         }
       })
-      check('手机「更多」面板 Esc 关闭后焦点归还「更多」触发件', sheetReturned.isMoreTab,
-        `焦点=${sheetReturned.tag}/${sheetReturned.label} 是第3个tab=${sheetReturned.isMoreTab}`)
-      /* ④「取消」按钮关闭（既有行为，不能因新增键盘逻辑而回归）。 */
-      await moreBtn.click()
-      await page.waitForSelector('.sheet', { timeout: 10_000 })
-      await page.locator('.sheet__cancel').click()
-      const sheetClosed = await until(async () => (await page.locator('.sheet').count()) === 0, 6_000)
-      check('手机「更多」面板可关闭（取消）', sheetClosed)
+      check('手机「个人信息」面板 Esc 关闭后焦点归还「个人信息」触发件', sheetReturned.isProfileTab,
+        `焦点=${sheetReturned.tag}/${sheetReturned.label} 是第3个tab=${sheetReturned.isProfileTab}`)
+      /* ④ 关闭按钮关闭（既有行为，不能因新增键盘逻辑而回归）。 */
+      await profileBtn.click()
+      await page.waitForSelector('.psheet', { timeout: 10_000 })
+      await page.locator('.psheet__close').click()
+      const sheetClosed = await until(async () => (await page.locator('.psheet').count()) === 0, 6_000)
+      check('手机「个人信息」面板可关闭（关闭按钮）', sheetClosed)
       await ctx.close()
       }
     }

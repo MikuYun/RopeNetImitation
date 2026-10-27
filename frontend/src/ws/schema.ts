@@ -4,15 +4,15 @@
  * 出站帧在发送前 parse 一次，入站帧在分发前 parse 一次：后端独立开发，
  * 帧结构漂移是必然事件，必须在边界处失败而不是让脏数据流进 store。
  *
- * 契约基准：backend/API.md §6（v0.2.0）+ docs/contract/diff-report.md §2.5
- *   - 服务端信封 {v:1, id, type, timestamp, data}
+ * 契约基准：docs/v2/API-V2.md §2/§5（API 0.3.0，protocolVersion = 2）
+ *   - 服务端信封 {v:1, id, type, timestamp, data}（信封 v 与业务 protocolVersion 独立演进）
  *   - 客户端帧**无信封 id/timestamp**，只有 {v, type, ...payload}
- *   - 消息实体字段为 msgId / content
+ *   - 消息实体字段为 msgId / content / attachments[] / recalled / replyTo
  *   - typing 字段为 active（布尔）
- *   - 发送消息与已读**走 REST**，不存在 WS 发消息 ack
+ *   - 发送消息、撤回与已读**走 REST**，不存在 WS 发消息 ack
  */
 import { z } from 'zod'
-import { WS_PROTOCOL_VERSION } from './constants'
+import { WS_ENVELOPE_VERSION } from './constants'
 
 /*
  * 关闭 zod 的 JIT 编译 —— 严格 CSP（script-src 'self'，无 'unsafe-eval'）必需。
@@ -68,7 +68,7 @@ export const zUser = zUserBrief.extend({
 })
 
 /**
- * 附件元数据。字段与 `GET /api/v1/uploads` / `Message.attachment` 一致。
+ * 附件元数据。字段与 `GET /api/v1/uploads` / `Message.attachments[]` 一致。
  *
  * 注意 `url` 需 Bearer 才能访问，前端不得直接用于 `<img src>`（见 api/uploads.ts）。
  */
@@ -77,9 +77,22 @@ export const zAttachment = z.object({
   name: z.string(),
   mimeType: z.string(),
   size: z.number().int().min(0),
-  kind: z.enum(['image', 'file']),
+  kind: z.enum(['image', 'video', 'file']),
   url: z.string(),
   createdAt: isoDateTime,
+})
+
+/**
+ * 引用回复的摘要（API-V2 §3 `ReplyRef`）。
+ *
+ * 只带展示所需的四个字段 —— 被引用消息的完整内容不随每条回复复制下发，
+ * 否则长会话里引用链会让 payload 指数膨胀。
+ */
+export const zReplyRef = z.object({
+  msgId: entityId,
+  senderId: entityId,
+  senderName: z.string(),
+  preview: z.string(),
 })
 
 export const zMessage = z.object({
@@ -88,11 +101,28 @@ export const zMessage = z.object({
   senderId: entityId,
   clientMsgId: z.string().nullable().optional(),
   seq: seqNumber,
-  // 附件消息：image / file。**保持非 passthrough 的严格性**（未知 type 仍要拒帧），
-  // 但要放行新增的两个值，否则 WS 推来的附件消息会被整帧丢弃。
-  type: z.enum(['text', 'system', 'image', 'file']),
+  // 消息类型六大类（API-V2 §2）：无附件→text，单一 kind→image/video/file，混合→mixed。
+  // **保持非 passthrough 的严格性**（未知 type 仍要拒帧），但必须放行全部六值，
+  // 否则 WS 推来的视频/混合消息会被整帧丢弃。
+  type: z.enum(['text', 'system', 'image', 'video', 'file', 'mixed']),
   content: z.string(),
-  // 可选：旧后端不带；`system` 恒为 null
+  /**
+   * 附件数组，**恒应为数组**（无附件 `[]`）。
+   *
+   * `.default([])` 是**向后兼容的硬要求**：灰度期旧后端根本没这个字段，
+   * 没有默认值就会让所有旧帧 `.safeParse` 失败 → 消息大面积不显示。
+   */
+  attachments: z.array(zAttachment).default([]),
+  /** 是否已撤回（撤回后 content=''、attachments=[]）。旧帧缺省 false。 */
+  recalled: z.boolean().default(false),
+  recalledAt: z.string().nullable().default(null),
+  replyTo: zReplyRef.nullable().default(null),
+  /**
+   * @deprecated 单数附件是 v0.2 的旧形状，v0.3 已改成 `attachments[]`。
+   *
+   * 这里只为兼容灰度期旧后端保留解析能力；消费方（handlers）拿到后必须
+   * 归一化进 `attachments`，**不得**再直接读它。等全部后端切换完成即可删除。
+   */
   attachment: zAttachment.nullable().optional(),
   createdAt: isoDateTime,
 })
@@ -162,18 +192,21 @@ export type InboundEnvelope = z.infer<typeof zInboundEnvelope>
 /**
  * 构造出站帧。
  * 客户端帧**不加** id / timestamp —— 后端 schema 会拒绝未知字段。
+ *
+ * 这里的 `v` 是**信封版本**（后端 realtime.ts 恒发 `v:1`），不是业务协议版本 —— 后者
+ * 走 `ready.data.protocolVersion`（0.3.0 起为 2）。两者混用会一升级就 4002 断连。
  */
 export function makeClientFrame<T extends string>(
   type: T,
   payload: Record<string, unknown> = {},
-): { v: typeof WS_PROTOCOL_VERSION; type: T } & Record<string, unknown> {
-  return { v: WS_PROTOCOL_VERSION, type, ...payload }
+): { v: typeof WS_ENVELOPE_VERSION; type: T } & Record<string, unknown> {
+  return { v: WS_ENVELOPE_VERSION, type, ...payload }
 }
 
 /* ── 入站帧 data 结构 ───────────────────────────────────────────── */
 
 /**
- * ready 帧。后端 v0.2.0 落地后为 `{userId,serverTime,protocolVersion:1}`。
+ * ready 帧。后端 0.3.0 起为 `{userId,serverTime,protocolVersion:2}`（信封 v 仍是 1）。
  * 除 userId 外一律宽松：后端可能继续追加字段，前端不得因此拒帧。
  */
 export const zReadyData = z
@@ -181,7 +214,7 @@ export const zReadyData = z
     userId: entityId,
     /** ISO 8601 UTC；与信封 timestamp 相同。优先用它做时钟偏移 */
     serverTime: isoDateTime.optional(),
-    /** 信封协议版本，数字 1 */
+    /** 业务协议版本（0.3.0 起为 2）。缺失时不校验，便于灰度 */
     protocolVersion: z.number().int().optional(),
   })
   .passthrough()
@@ -190,6 +223,26 @@ export const zMessageCreatedData = z.object({
   message: zMessage,
   unreadCount: z.number().int().min(0).optional(),
 })
+
+/**
+ * `message.updated` 帧（API-V2 §6）。
+ *
+ * 服务端可能下发**两种形状**：裸 `{message}` 或 `{conversationId, message}`。
+ * 契约把 `conversationId` 标为可选（消息实体里本来就有），所以用 union 两种都收：
+ * 只写一种就会在灰度期丢帧 —— 而丢的恰好是「撤回」这类必须立刻同步的更新。
+ */
+export const zMessageUpdatedData = z.union([
+  z.object({ message: zMessage }),
+  z.object({ conversationId: entityId.optional(), message: zMessage }),
+])
+
+/** `post.*` 帧载荷（API-V2 §7）。前端只透传给广场模块，不在这里解释业务。 */
+export const zPostEventData = z.object({
+  postId: entityId,
+  actorId: entityId,
+})
+
+export type PostEventData = z.infer<typeof zPostEventData>
 
 export const zConversationEventData = z.object({
   conversation: zConversation,
@@ -242,6 +295,8 @@ export const S2C = {
   PONG: 'pong',
   ERROR: 'error',
   MESSAGE_CREATED: 'message.created',
+  /** API-V2 §6：消息被修改（撤回等）后重新下发完整 Message。 */
+  MESSAGE_UPDATED: 'message.updated',
   CONVERSATION_CREATED: 'conversation.created',
   CONVERSATION_UPDATED: 'conversation.updated',
   CONVERSATION_REMOVED: 'conversation.removed',
@@ -252,6 +307,11 @@ export const S2C = {
   FRIEND_RESOLVED: 'friend.resolved',
   PRESENCE_CHANGED: 'presence.changed',
   TYPING_CHANGED: 'typing.changed',
+  /** 广场事件（API-V2 §7）：fe-square 订阅，消息层只负责分发。 */
+  POST_CREATED: 'post.created',
+  POST_DELETED: 'post.deleted',
+  POST_LIKED: 'post.liked',
+  POST_COMMENTED: 'post.commented',
 } as const
 
 export const C2S = {

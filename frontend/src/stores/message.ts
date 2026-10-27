@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import * as api from '@/api/messages'
+import { messageTypeOfAttachments } from '@/utils/attachments'
 import { uuid } from '@/utils/uuid'
 import { currentEpoch, epochValid } from './session'
 import {
@@ -8,6 +9,7 @@ import {
   type Attachment,
   type ConversationBucket,
   type LocalMessage,
+  type ReplyRef,
   type WireMessage,
 } from '@/types/domain'
 
@@ -18,7 +20,10 @@ import {
  *   层 2  confirmedById         按服务端 msgId 去重（应对实时推送与分页补齐重叠）
  *   层 3  服务端幂等            (senderId, clientMsgId) 唯一索引，网络重试不产生重复
  *
- * 所有插入都走 insertOrIgnore 单一入口，避免出现第二套合并逻辑。
+ * 所有插入都走 insertOrIgnore / upsertMessage 两个入口：
+ *   - insertOrIgnore：**追加**新消息（已存在则忽略）；
+ *   - upsertMessage：**覆盖**已有消息（`message.updated`，撤回是当前唯一场景）。
+ * 除这两个入口外不得出现第三套合并逻辑。
  * 排序一律按 seq；绝不用 createdAt（时钟偏移会导致消息跳跃）。
  */
 export const useMessageStore = defineStore('message', () => {
@@ -88,7 +93,11 @@ export const useMessageStore = defineStore('message', () => {
       seq: m.seq,
       type: m.type,
       content: m.content,
-      attachment: m.attachment ?? null,
+      // 防御性拷贝：wire 对象可能被调用方复用，直接挂引用会让两侧共享同一个数组
+      attachments: [...(m.attachments ?? [])],
+      recalled: m.recalled === true,
+      recalledAt: m.recalledAt ?? null,
+      replyTo: m.replyTo ?? null,
       createdAt: m.createdAt,
       status: 'sent',
     }
@@ -132,6 +141,46 @@ export const useMessageStore = defineStore('message', () => {
     if (b.oldestSeq === null || seq < b.oldestSeq) b.oldestSeq = seq
   }
 
+  /**
+   * 服务端消息的**覆盖式**写入 —— `message.updated` 专用（撤回是当前的唯一场景）。
+   *
+   * 与 `insertOrIgnore` 的区别在语义：
+   *   - `insertOrIgnore` 是「已存在则忽略」，只适合**追加**新消息；
+   *   - 这里是「以服务端最新版本为准」，已存在必须**原地替换**。
+   *
+   * 【为什么原地替换而不是删了重插】撤回后 `content` 变空串、`attachments` 变空数组，
+   * 但消息在时间线上的位置不能变（seq 不变）—— 删了重插会重新排序，可能挪到末尾。
+   * 同时必须保留 `status:'sent'`：来自服务端的消息永远是已确认态（normalizeWire 给的就是 sent）。
+   *
+   * 本地没有这条消息时（例如它还在更早的分页里没加载）必须插入，不能当成
+   * 「不关我事」丢弃 —— 否则用户先收到撤回推送、后翻到历史，看到的会是原文。
+   */
+  function upsertMessage(wire: WireMessage): void {
+    const b = bucketOf(wire.conversationId)
+    const next = normalizeWire(wire)
+
+    // 层 1：如果这条消息还在 pending（乐观态），先兑现掉，避免同一消息出现两份
+    if (wire.clientMsgId) {
+      const pending = b.pendingByClientMsgId.get(wire.clientMsgId)
+      if (pending) {
+        b.pendingByClientMsgId.delete(wire.clientMsgId)
+        const pIdx = b.pending.findIndex((p) => p.localId === pending.localId)
+        if (pIdx >= 0) b.pending.splice(pIdx, 1)
+      }
+    }
+
+    const idx = b.confirmed.findIndex((m) => m.msgId === wire.msgId)
+    if (idx >= 0) {
+      b.confirmed[idx] = next
+    } else {
+      b.confirmedById.add(wire.msgId)
+      b.confirmed.push(next)
+      b.confirmed.sort((x, y) => (x.seq ?? 0) - (y.seq ?? 0))
+    }
+    syncCursor(b, wire.seq)
+    buckets.value.set(wire.conversationId, { ...b })
+  }
+
   /** 批量插入（分页 / 补偿）。 */
   function insertMany(list: WireMessage[]): void {
     for (const m of list) insertOrIgnore(m)
@@ -141,18 +190,23 @@ export const useMessageStore = defineStore('message', () => {
    * 乐观发送：立即入 pending，返回本地消息。
    * 网络失败或后端确认后由 confirm / markFailed 收尾。
    *
-   * 附件消息：`attachment` 传入已上传好的附件，`type` 由 kind 推导
-   * （image→'image' / file→'file'），正文允许为空串 —— 与服务端推导规则一致。
+   * 附件消息（v2）：`attachments` 传已上传好的附件数组，`type` 由**附件组合**推导
+   * （无附件→text、单一 kind→image/video/file、混合→mixed），与服务端推导规则一致
+   * —— 否则本地气泡会先按一种形态渲染、回包后又跳成另一种。
+   *
+   * `replyTo` 是本地构造的引用快照：发送时服务端还没下发 ReplyRef，但气泡需要
+   * 立刻显示出「回复了谁」。字段口径与 normalize.toReplyRef 一致。
    */
   function appendOptimistic(input: {
     conversationId: string
     senderId: string
     content: string
-    attachment?: Attachment | null
+    attachments?: Attachment[]
+    replyTo?: ReplyRef | null
   }): LocalMessage {
     const b = bucketOf(input.conversationId)
     const clientMsgId = uuid()
-    const attachment = input.attachment ?? null
+    const attachments = [...(input.attachments ?? [])]
     const msg: LocalMessage = {
       localId: clientMsgId,
       msgId: '',
@@ -160,9 +214,12 @@ export const useMessageStore = defineStore('message', () => {
       senderId: input.senderId,
       clientMsgId,
       seq: null,
-      type: attachment ? (attachment.kind === 'image' ? 'image' : 'file') : 'text',
+      type: messageTypeOfAttachments(attachments),
       content: input.content,
-      attachment,
+      attachments,
+      recalled: false,
+      recalledAt: null,
+      replyTo: input.replyTo ?? null,
       createdAt: new Date().toISOString(),
       status: 'sending',
     }
@@ -363,6 +420,7 @@ export const useMessageStore = defineStore('message', () => {
     readCountFor,
     insertOrIgnore,
     insertMany,
+    upsertMessage,
     appendOptimistic,
     markFailed,
     markRetrying,

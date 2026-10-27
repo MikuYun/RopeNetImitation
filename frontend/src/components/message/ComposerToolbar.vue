@@ -45,6 +45,8 @@ const emit = defineEmits<{
   togglePreview: []
   /** 选图片：只接受图片 MIME（图库/拍照由系统决定，不加 capture）。 */
   pickImage: []
+  /** 选视频：v2 起支持 mp4/webm（单个 ≤100 MiB，一条消息最多 1 个）。 */
+  pickVideo: []
   /** 选文件：不限类型，由后端白名单决定成败。 */
   pickFile: []
 }>()
@@ -136,6 +138,31 @@ const tools: ToolItem[] = [
             stroke="currentColor"
             stroke-width="1.7"
             stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <span v-else class="cbar__spinner" aria-hidden="true" />
+      </button>
+      <!--
+        视频是独立入口（v2 新增）：accept 只列 mp4/webm。
+        与图片分开的原因同「图片 vs 文件」——用户在系统选择器里要有明确心智：
+        视频上限是 100 MiB 且一条消息只能带 1 个，跟图片的 10 MiB / 9 张不是一回事。
+      -->
+      <button
+        class="cbar__btn cbar__btn--video"
+        type="button"
+        :title="uploading ? '正在上传…' : '发送视频（MP4 / WebM，≤100 MB）'"
+        :aria-label="uploading ? '正在上传' : '发送视频'"
+        :disabled="uploading || disabled"
+        @click="emit('pickVideo')"
+      >
+        <svg v-if="!uploading" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+          <rect x="3" y="6" width="13" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.7" />
+          <path
+            d="M16 10l5-3v10l-5-3z"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
             stroke-linejoin="round"
           />
         </svg>

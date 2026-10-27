@@ -1,5 +1,14 @@
 <script setup lang="ts">
-/** 左侧窄边栏：头像 + 会话/联系人切页 + 主题切换 + 登出。 */
+/**
+ * 左侧窄边栏：我的头像（打开个人信息抽屉）+ 会话/联系人/广场切页。
+ *
+ * v2 变更（UI-V2 §3/§4）：
+ *  1. 头像按钮**必须传 `:src`** —— 这是「左上角头像不是我的头像」的根因：
+ *     旧实现没传 src，AppAvatar 永远只会渲染昵称首字母。点击头像改为打开
+ *     个人信息抽屉（`ui.openProfileDrawer()`）。
+ *  2. 中间图标区新增第三个 tab「广场」。
+ *  3. 底部「主题切换」「退出登录」删除 —— 二者已移进个人信息抽屉/详细资料页。
+ */
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import AppAvatar from '@/components/base/AppAvatar.vue'
@@ -18,9 +27,14 @@ const router = useRouter()
 const unread = computed(() => convStore.totalUnread)
 const pending = computed(() => friendStore.incomingCount)
 
-async function onLogout(): Promise<void> {
-  await auth.logout()
-  void router.push({ name: 'login' })
+/** 头像选中态：抽屉打开时高亮，给用户「点的是它」的反馈。 */
+const avatarActive = computed(() => ui.profileDrawerOpen)
+
+/** 广场 tab 选中态。 */
+const squareActive = computed(() => router.currentRoute.value.name === 'square')
+
+function openProfile(): void {
+  ui.openProfileDrawer()
 }
 
 /**
@@ -34,12 +48,36 @@ async function goTab(tab: 'chats' | 'contacts'): Promise<void> {
     await router.push({ name: 'chat-empty' })
   }
 }
+
+async function goSquare(): Promise<void> {
+  convStore.setActive(null)
+  if (router.currentRoute.value.name !== 'square') {
+    await router.push({ name: 'square' })
+  }
+}
 </script>
 
 <template>
   <nav class="rail">
     <div class="rail__top">
-      <AppAvatar :name="auth.displayName" :seed="auth.userId" :size="34" :radius="8" />
+      <button
+        class="rail__avatar"
+        :class="{ 'rail__avatar--active': avatarActive }"
+        type="button"
+        aria-label="打开个人信息"
+        aria-haspopup="dialog"
+        :aria-expanded="avatarActive"
+        title="个人信息"
+        @click="openProfile"
+      >
+        <AppAvatar
+          :name="auth.displayName"
+          :seed="auth.userId"
+          :src="auth.user?.avatarUrl ?? ''"
+          :size="34"
+          :radius="10"
+        />
+      </button>
     </div>
 
     <div class="rail__tabs">
@@ -48,6 +86,7 @@ async function goTab(tab: 'chats' | 'contacts'): Promise<void> {
         :class="{ 'rail__tab--active': ui.railTab === 'chats' }"
         type="button"
         title="会话"
+        aria-label="会话"
         @click="goTab('chats')"
       >
         <AppIcon name="chat" :size="22" />
@@ -59,19 +98,22 @@ async function goTab(tab: 'chats' | 'contacts'): Promise<void> {
         :class="{ 'rail__tab--active': ui.railTab === 'contacts' }"
         type="button"
         title="联系人"
+        aria-label="联系人"
         @click="goTab('contacts')"
       >
         <AppIcon name="contact" :size="22" />
         <span v-if="pending > 0" class="rail__badge">{{ pending > 99 ? '99+' : pending }}</span>
       </button>
-    </div>
 
-    <div class="rail__bottom">
-      <button class="rail__tab" type="button" :title="ui.theme === 'dark' ? '切换浅色' : '切换深色'" @click="ui.toggleTheme()">
-        <AppIcon :name="ui.theme === 'dark' ? 'sun' : 'moon'" :size="20" />
-      </button>
-      <button class="rail__tab" type="button" title="退出登录" @click="onLogout">
-        <AppIcon name="logout" :size="20" />
+      <button
+        class="rail__tab"
+        :class="{ 'rail__tab--active': squareActive }"
+        type="button"
+        title="广场"
+        aria-label="广场"
+        @click="goSquare"
+      >
+        <AppIcon name="compass" :size="22" />
       </button>
     </div>
   </nav>
@@ -92,16 +134,28 @@ async function goTab(tab: 'chats' | 'contacts'): Promise<void> {
 .rail__top {
   flex: 0 0 auto;
 }
+.rail__avatar {
+  display: block;
+  padding: 3px;
+  border: none;
+  border-radius: 13px;
+  background: transparent;
+  cursor: pointer;
+  line-height: 0;
+  transition: background var(--dur, 0.15s) var(--ease-out, ease);
+}
+.rail__avatar:hover {
+  background: var(--app-hover);
+}
+.rail__avatar--active {
+  background: var(--app-hover);
+  box-shadow: 0 0 0 2px var(--color-brand-500);
+}
 .rail__tabs {
   display: flex;
   flex-direction: column;
   gap: 6px;
   flex: 1;
-}
-.rail__bottom {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 .rail__tab {
   position: relative;
@@ -115,7 +169,7 @@ async function goTab(tab: 'chats' | 'contacts'): Promise<void> {
   background: transparent;
   color: var(--app-text-muted);
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background var(--dur, 0.15s) var(--ease-out, ease);
 }
 .rail__tab:hover {
   background: var(--app-hover);

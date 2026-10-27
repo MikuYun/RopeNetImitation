@@ -12,13 +12,21 @@
 
 export type ConversationType = 'single' | 'group'
 /**
- * 消息类型。
+ * 消息类型（v2 契约）。
  *
- * `image` / `file` 是**附件消息**：正文可以为空（图片甚至恒为空），真实内容
- * 由 `attachment` 承载 —— 与后端 `POST /api/v1/uploads` + `Message.attachment`
- * 契约对齐。保持联合是超集，旧代码里的 `'text' | 'system'` 判断不会失效。
+ * `image` / `video` / `file` 是**单一附件类型**的消息，`mixed` 是「一条消息里
+ * 附件类型不统一」（例如一张图 + 一个 pdf）。真实内容由 `attachments` 数组承载，
+ * 与后端 `POST /api/v1/uploads` + `Message.attachments` 契约对齐。
+ *
+ * 断言：`type` 由服务端按附件组合推导 —— 无附件 → text，只图片 → image，
+ * 只视频 → video，只文件 → file，混合 → mixed。前端乐观消息必须用同一套规则
+ * （见 `utils/attachments.ts#messageTypeOfAttachments`），否则本地态与回包会闪一下。
+ *
+ * 保持联合是超集：旧代码里的 `'text' | 'system'` 判断不会失效。
  */
-export type MessageType = 'text' | 'system' | 'image' | 'file'
+export type MessageType = 'text' | 'system' | 'image' | 'video' | 'file' | 'mixed'
+
+export type AttachmentKind = 'image' | 'video' | 'file'
 
 /**
  * 附件元数据（消息内嵌形态）。
@@ -31,15 +39,35 @@ export type MessageType = 'text' | 'system' | 'image' | 'file'
  * `GET`(responseType:'blob') 再 `URL.createObjectURL`，**不得**直接把 `url`
  * 塞进 `<img>`。详见 `src/api/uploads.ts`。
  */
+/** 附件种类（v2 新增 video；mp4/webm，上限 100 MiB）。 */
 export interface Attachment {
   id: string
   name: string
   mimeType: string
   size: number
-  kind: 'image' | 'file'
+  kind: AttachmentKind
   url: string
   createdAt: string
 }
+
+/**
+ * 引用回复的**快照**（v2 新增）。
+ *
+ * 【为什么是快照而不是只存 msgId】被引用的消息可能被撤回、可能不在已加载分页里，
+ * 甚至可能已经从本地 bucket 里被清理。只存 msgId 的话，气泡上的引用条要么空白、
+ * 要么得临时去拉一条消息（点了才加载，引用条就闪一下）。服务端在下发消息时把
+ * 展示所需的三个字段一起投影过来，前端渲染零成本、离线也正确。
+ *
+ * `preview` 是服务端已经裁好的短文本（不保证是完整正文，也不保证不含 Markdown
+ * 源码 —— 引用条只做单行纯文本展示，不做 Markdown 渲染）。
+ */
+export interface ReplyRef {
+  msgId: string
+  senderId: string
+  senderName: string
+  preview: string
+}
+
 export type MemberRole = 'owner' | 'admin' | 'member'
 /**
  * 账号级别角色（与群内角色 `MemberRole` 是**两回事**）。
@@ -96,8 +124,11 @@ export interface MessagePreview {
   content: string
   senderId: string
   seq: number
-  /** 附件消息在会话列表里的短预览（不回带完整 attachment，避免列表膨胀）。 */
-  attachmentKind?: 'image' | 'file' | null
+  /**
+   * 附件消息在会话列表里的短预览（不回带完整 attachment，避免列表膨胀）。
+   * 多条附件时服务端给「第一条」的 kind，够列表图标区分即可。
+   */
+  attachmentKind?: AttachmentKind | null
 }
 
 export interface ConversationSummary {
@@ -129,10 +160,19 @@ export interface WireMessage {
   type: MessageType
   content: string
   /**
-   * 附件消息的元数据；非附件消息恒为 `null`（后端也保证 `system` 为 null）。
-   * 声明为可选是为了兼容尚未带该字段的后端版本。
+   * 附件集合（v2 起恒存在）。无附件是**空数组** `[]`，不是 `null` / `undefined`。
+   *
+   * 【为什么从单数改成数组】一条消息可以同时带多张图、图 + 文件；单数
+   * `attachment` 无法表达，旧实现只能靠「再发一条消息」。数组化后顺序即展示顺序
+   * （服务端按 `message_attachments.position` 排好返回）。
    */
-  attachment?: Attachment | null
+  attachments: Attachment[]
+  /** 是否已撤回。撤回后 `content` 为空串、`attachments` 为空数组。 */
+  recalled: boolean
+  /** 撤回时间；未撤回为 `null`。 */
+  recalledAt: string | null
+  /** 引用回复的目标消息快照；非回复消息为 `null`。 */
+  replyTo: ReplyRef | null
   createdAt: string
 }
 

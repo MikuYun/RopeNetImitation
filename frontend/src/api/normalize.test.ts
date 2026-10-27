@@ -1,16 +1,20 @@
 import { describe, expect, it } from 'vitest'
 import {
   deriveRelationship,
+  deriveTypeFromAttachments,
   isMutedNow,
+  normalizeAttachmentKind,
   normalizeConvType,
   normalizeMessageType,
   normalizeRole,
   toConversationDetail,
   toConversationSummary,
   toFriendRequest,
+  toLocalMessage,
   toPinnedMessage,
   toUser,
   toUserBrief,
+  toWireMessage,
 } from '@/api/normalize'
 import type {
   WireConversation,
@@ -423,24 +427,45 @@ describe('toPinnedMessage（ux2-contract §九）', () => {
     expect(toPinnedMessage(wirePinned()).pinnedBy.uid).toBe(1)
   })
 
-  it('带附件的置顶消息能保留 attachment', () => {
+  it('带附件的置顶消息能保留 attachments（v2 数组形状）', () => {
+    const msg: WireMessage = {
+      ...wirePinned().message,
+      type: 'image',
+      content: '',
+      attachments: [
+        {
+          id: 'a-1',
+          name: 'a.png',
+          mimeType: 'image/png',
+          size: 100,
+          kind: 'image',
+          url: '/api/v1/uploads/a-1',
+          createdAt: '2026-10-22T00:00:00.000Z',
+        },
+      ],
+    }
+    const p = toPinnedMessage(wirePinned({ message: msg }))
+    expect(p.message.attachments.map((a) => a.id)).toEqual(['a-1'])
+    expect(p.message.type).toBe('image')
+  })
+
+  it('旧后端（单数 attachment）在置顶消息里也能被扮平成数组', () => {
     const msg: WireMessage = {
       ...wirePinned().message,
       type: 'image',
       content: '',
       attachment: {
-        id: 'a-1',
-        name: 'a.png',
+        id: 'a-old',
+        name: 'old.png',
         mimeType: 'image/png',
-        size: 100,
+        size: 10,
         kind: 'image',
-        url: '/api/v1/uploads/a-1',
+        url: '/api/v1/uploads/a-old',
         createdAt: '2026-10-22T00:00:00.000Z',
       },
     }
     const p = toPinnedMessage(wirePinned({ message: msg }))
-    expect(p.message.attachment?.id).toBe('a-1')
-    expect(p.message.type).toBe('image')
+    expect(p.message.attachments.map((a) => a.id)).toEqual(['a-old'])
   })
 })
 
@@ -458,5 +483,165 @@ describe('normalizeRole / normalizeMessageType 的 ux2 扩展', () => {
     expect(normalizeMessageType('text')).toBe('text')
     expect(normalizeMessageType('system')).toBe('system')
     expect(normalizeMessageType('weird')).toBe('text')
+  })
+
+  it('v2 新增的 video / mixed 也保留（缺这两个值，视频消息会被降级成文本）', () => {
+    expect(normalizeMessageType('video')).toBe('video')
+    expect(normalizeMessageType('mixed')).toBe('mixed')
+  })
+})
+
+/*
+ * ── v2（API 0.3.0）契约：attachments 数组 / recalled / replyTo / video ──
+ *
+ * 灰度期旧后端的帧里只有单数 `attachment`，甚至三个新字段一个都没有。
+ * 归一化层必须把这些全部兜住：漏一个就会让整条消息在 UI 上错形
+ * （图片变空气泡、撤回消息泄露原文、引用条消失），而 TS 检查不到 ——
+ * 因为 wire 类型里这些字段是可选的。所以全部钉在这里。
+ */
+describe('v2 消息形状：attachments / recalled / replyTo / video', () => {
+  function wireMsg(over: Partial<WireMessage> = {}): WireMessage {
+    return {
+      msgId: 'm-1',
+      conversationId: 'c1',
+      senderId: 'u-bob',
+      clientMsgId: null,
+      seq: 7,
+      type: 'text',
+      content: 'hello',
+      createdAt: '2026-10-22T00:00:00.000Z',
+      ...over,
+    }
+  }
+
+  function wireAtt(id: string, kind: 'image' | 'video' | 'file', name: string) {
+    return {
+      id,
+      name,
+      mimeType: kind === 'video' ? 'video/mp4' : kind === 'image' ? 'image/png' : 'text/plain',
+      size: 1234,
+      kind,
+      url: `/api/v1/uploads/${id}`,
+      createdAt: '2026-10-22T00:00:00.000Z',
+    }
+  }
+
+  it('多附件原样保留顺序（顺序即 UI 宫格排布，不能按 id 重排）', () => {
+    const w = toWireMessage(wireMsg({ attachments: [wireAtt('a2', 'image', '2.png'), wireAtt('a1', 'image', '1.png')] }))
+    expect(w.attachments.map((a) => a.id)).toEqual(['a2', 'a1'])
+    expect(w.type).toBe('image')
+  })
+
+  it('旧后端只有单数 attachment 时包成单元素数组（灰度期最关键的一条）', () => {
+    const w = toWireMessage(wireMsg({ type: 'image', content: '', attachment: wireAtt('a-old', 'image', 'old.png') }))
+    expect(w.attachments.map((a) => a.id)).toEqual(['a-old'])
+    expect(w.type).toBe('image')
+  })
+
+  it('attachments 为 null / 缺失 / 含脏元素时一律得到干净数组', () => {
+    expect(toWireMessage(wireMsg()).attachments).toEqual([])
+    expect(toWireMessage(wireMsg({ attachments: null })).attachments).toEqual([])
+    // 脏元素（null）被过滤掉，不能让下游 `attachments[0].kind` 炸
+    const dirty = toWireMessage(
+      wireMsg({ type: 'image', content: '', attachments: [null as never, wireAtt('a1', 'image', 'ok.png')] }),
+    )
+    expect(dirty.attachments.map((a) => a.id)).toEqual(['a1'])
+  })
+
+  it('recalled / recalledAt / replyTo 缺失时补 false / null / null', () => {
+    const w = toWireMessage(wireMsg())
+    expect(w.recalled).toBe(false)
+    expect(w.recalledAt).toBeNull()
+    expect(w.replyTo).toBeNull()
+  })
+
+  it('recalled=true 与 recalledAt 原样透传（撤回态不能丢，否则 UI 会渲染原文）', () => {
+    const w = toWireMessage(
+      wireMsg({ content: '', recalled: true, recalledAt: '2026-10-22T00:01:00.000Z' }),
+    )
+    expect(w.recalled).toBe(true)
+    expect(w.recalledAt).toBe('2026-10-22T00:01:00.000Z')
+  })
+
+  it('replyTo 逐字段透传（引用条要显示 senderName 与 preview）', () => {
+    const w = toWireMessage(
+      wireMsg({
+        replyTo: { msgId: 'm-0', senderId: 'u-alice', senderName: 'Alice', preview: '被引用的原文' },
+      }),
+    )
+    expect(w.replyTo).toEqual({
+      msgId: 'm-0',
+      senderId: 'u-alice',
+      senderName: 'Alice',
+      preview: '被引用的原文',
+    })
+  })
+
+  it('replyTo 展示字段缺失时保留 msgId、preview 兜空串（丢了 msgId 就没法点击跳转）', () => {
+    expect(toWireMessage(wireMsg({ replyTo: null })).replyTo).toBeNull()
+    // 没有任何 msgId 的引用是废数据，整条丢掉
+    expect(toWireMessage(wireMsg({ replyTo: { preview: 'x' } as never })).replyTo).toBeNull()
+    // 有 msgId 但缺 senderName/preview：仍要能渲染 + 能跳转，展示字段兜空串
+    const partial = toWireMessage(wireMsg({ replyTo: { msgId: 'm-0' } as never }))
+    expect(partial.replyTo?.msgId).toBe('m-0')
+    expect(partial.replyTo?.preview).toBe('')
+  })
+
+  it('video 附件：kind 保留 video，type 推导为 video', () => {
+    const w = toWireMessage(wireMsg({ type: 'video', content: '', attachments: [wireAtt('v1', 'video', 'a.mp4')] }))
+    expect(w.attachments[0]?.kind).toBe('video')
+    expect(w.type).toBe('video')
+  })
+
+  it('混合附件推导为 mixed（图片 + 视频）', () => {
+    const w = toWireMessage(
+      wireMsg({
+        type: 'text',
+        content: '看这个',
+        attachments: [wireAtt('a1', 'image', '1.png'), wireAtt('v1', 'video', 'a.mp4')],
+      }),
+    )
+    expect(w.type).toBe('mixed')
+  })
+
+  it('声称 image 但没有任何附件 → 降级 text（避免永远加载不出的空卡片）', () => {
+    expect(toWireMessage(wireMsg({ type: 'image', content: '' })).type).toBe('text')
+  })
+
+  it('normalizeAttachmentKind：未知 kind 一律降级 file（不能让 UI 拿到不存在的分支）', () => {
+    expect(normalizeAttachmentKind('image')).toBe('image')
+    expect(normalizeAttachmentKind('video')).toBe('video')
+    expect(normalizeAttachmentKind('file')).toBe('file')
+    expect(normalizeAttachmentKind('audio')).toBe('file')
+    expect(normalizeAttachmentKind('weird')).toBe('file')
+  })
+
+  it('toLocalMessage 与 toWireMessage 对 v2 字段保持同一份真值', () => {
+    const raw = wireMsg({
+      type: 'image',
+      content: '',
+      attachments: [wireAtt('a1', 'image', '1.png')],
+      recalled: true,
+      recalledAt: '2026-10-22T00:01:00.000Z',
+      replyTo: { msgId: 'm-0', senderId: 'u-alice', senderName: 'Alice', preview: 'x' },
+    })
+    const w = toWireMessage(raw)
+    const l = toLocalMessage(raw)
+    expect(l.attachments).toEqual(w.attachments)
+    expect(l.recalled).toBe(w.recalled)
+    expect(l.recalledAt).toBe(w.recalledAt)
+    expect(l.replyTo).toEqual(w.replyTo)
+    expect(l.status).toBe('sent')
+  })
+
+  it('deriveTypeFromAttachments 与服务端推导规则逐字一致', () => {
+    expect(deriveTypeFromAttachments([])).toBe('text')
+    expect(deriveTypeFromAttachments([{ kind: 'image' } as never])).toBe('image')
+    expect(deriveTypeFromAttachments([{ kind: 'video' } as never])).toBe('video')
+    expect(deriveTypeFromAttachments([{ kind: 'file' } as never])).toBe('file')
+    expect(deriveTypeFromAttachments([{ kind: 'file' } as never, { kind: 'file' } as never])).toBe('file')
+    expect(
+      deriveTypeFromAttachments([{ kind: 'image' } as never, { kind: 'video' } as never]),
+    ).toBe('mixed')
   })
 })

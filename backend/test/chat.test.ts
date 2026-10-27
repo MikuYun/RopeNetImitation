@@ -46,7 +46,7 @@ test('authentication, validation, profile, session renewal and revocation', asyn
   const backend = await fixture(context);
   const health = await call(backend, 'GET', '/api/v1/health');
   assert.equal(health.statusCode, 200);
-  assert.equal(health.json().protocolVersion, 1);
+  assert.equal(health.json().protocolVersion, 2);
   const anonymous = await call(backend, 'GET', '/api/v1/users/me');
   assert.equal(anonymous.statusCode, 401);
   assert.equal(anonymous.json().error.code, 'UNAUTHORIZED');
@@ -90,12 +90,12 @@ test('both health routes expose the same numeric protocol version and UTC clock'
   for (const response of results) {
     assert.equal(response.statusCode, 200);
     const { serverTime, ...metadata } = response.json();
-    assert.deepEqual(metadata, { status: 'ok', version: '0.2.0', protocolVersion: 1 });
+    assert.deepEqual(metadata, { status: 'ok', version: '0.3.0', protocolVersion: 2 });
     assert.equal(new Date(serverTime).toISOString(), serverTime);
     assert.ok(Math.abs(Date.now() - Date.parse(serverTime)) < 5000);
   }
   const openapi = backend.app.swagger();
-  assert.equal(openapi.info.version, '0.2.0');
+  assert.equal(openapi.info.version, '0.3.0');
   assert.deepEqual(openapi.paths?.['/health']?.get?.responses, openapi.paths?.['/api/v1/health']?.get?.responses);
 });
 
@@ -143,7 +143,7 @@ test('message idempotency, per-conversation sequence, cursors and unread count',
   assert.equal(duplicateConversation.json().id, conversationId);
   assert.equal(duplicateConversation.json().title, 'alice 中文');
   assert.equal(duplicateConversation.json().type, 'single');
-  const body = { clientMsgId: randomUUID(), type: 'text', content: '你好 <script>alert(1)</script>' };
+  const body = { clientMsgId: randomUUID(), content: '你好 <script>alert(1)</script>' };
   const first = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token, body);
   assert.equal(first.statusCode, 201, first.body);
   assert.equal(first.json().seq, 1);
@@ -155,7 +155,7 @@ test('message idempotency, per-conversation sequence, cursors and unread count',
   assert.equal((await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token, { ...body, content: ' '.repeat(2) })).statusCode, 400);
   assert.equal((await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token, { ...body, content: '字'.repeat(4001) })).statusCode, 400);
   const requests = Array.from({ length: 10 }, (_, index) => call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), type: 'text', content: `消息 ${index}` }));
+    { clientMsgId: randomUUID(), content: `消息 ${index}` }));
   const sent = await Promise.all(requests);
   assert.ok(sent.every(response => response.statusCode === 201));
   assert.equal(new Set(sent.map(response => response.json().seq)).size, 10);
@@ -220,7 +220,7 @@ test('CORS, uniform errors, rate limiting and OpenAPI', async context => {
   assert.ok(openapi.paths?.['/api/v1/conversations/{conversationId}/messages']);
   assert.equal((await call(backend, 'GET', '/docs/')).statusCode, 200);
   assert.equal((await call(backend, 'GET', '/docs/static/swagger-ui.css')).statusCode, 200);
-  assert.equal((await call(backend, 'GET', '/openapi.json')).json().info.version, '0.2.0');
+  assert.equal((await call(backend, 'GET', '/openapi.json')).json().info.version, '0.3.0');
   assert.equal((await call(backend, 'GET', '/unknown')).json().error.code, 'NOT_FOUND');
 });
 
@@ -247,7 +247,7 @@ test('registration creates reciprocal default friendship and notifies the online
   const conversation = await call(backend, 'POST', '/api/v1/conversations/direct', newcomer.token, { userId: owner.user.id });
   assert.equal(conversation.statusCode, 200);
   assert.equal((await call(backend, 'POST', `/api/v1/conversations/${conversation.json().id}/messages`, newcomer.token,
-    { clientMsgId: randomUUID(), type: 'text', content: '自动好友可以直接聊天' })).statusCode, 201);
+    { clientMsgId: randomUUID(), content: '自动好友可以直接聊天' })).statusCode, 201);
   const duplicate = await call(backend, 'POST', '/api/v1/auth/register', undefined,
     { username: 'qjq', displayName: 'duplicate', password: 'correct-password-123' });
   assert.equal(duplicate.statusCode, 409);
@@ -346,7 +346,7 @@ test('real sockets deliver messages, presence, typing, read receipts and enforce
   const ready = await socketAlice.waitFor('ready');
   assert.equal(ready.v, 1);
   assert.equal(ready.data.userId, alice.user.id);
-  assert.equal(ready.data.protocolVersion, 1);
+  assert.equal(ready.data.protocolVersion, 2);
   assert.equal(new Date(ready.data.serverTime).toISOString(), ready.data.serverTime);
   assert.equal(ready.timestamp, ready.data.serverTime);
   await socketBob.waitFor('ready');
@@ -362,7 +362,7 @@ test('real sockets deliver messages, presence, typing, read receipts and enforce
   socketAlice.socket.send(JSON.stringify({ v: 1, type: 'typing', conversationId, active: true }));
   assert.equal((await socketBob.waitFor('typing.changed')).data.userId, alice.user.id);
   await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), type: 'text', content: '实时消息' });
+    { clientMsgId: randomUUID(), content: '实时消息' });
   assert.equal((await socketAlice.waitFor('message.created')).data.unreadCount, 0);
   assert.equal((await socketBob.waitFor('message.created')).data.unreadCount, 1);
   await call(backend, 'POST', `/api/v1/conversations/${conversationId}/read`, bob.token, { lastReadSeq: 1 });
@@ -476,7 +476,7 @@ test('group system events and read state reach all devices without leaking after
   await first.waitFor('conversation.removed');
   await second.waitFor('conversation.removed');
   const secret = await call(backend, 'POST', `/api/v1/conversations/${groupId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), type: 'text', content: '移除后保密消息' });
+    { clientMsgId: randomUUID(), content: '移除后保密消息' });
   assert.equal(secret.statusCode, 201);
   first.socket.send(JSON.stringify({ v: 1, type: 'typing', conversationId: groupId, active: true }));
   await first.waitFor('error');
@@ -505,7 +505,7 @@ test('removed groups cannot enter a sync batch, distinct chats maintain independ
   assert.equal(second.message.seq, 1);
   assert.notEqual(first.message.msgId, second.message.msgId);
   const collision = await call(backend, 'POST', `/api/v1/conversations/${secondId}/messages`, alice.token,
-    { clientMsgId, type: 'text', content: '第一会话' });
+    { clientMsgId, content: '第一会话' });
   assert.equal(collision.statusCode, 409);
   const denied = await call(backend, 'POST', '/api/v1/sync', bob.token,
     { cursors: [{ conversationId: firstId, lastSeq: 0 }, { conversationId: secondId, lastSeq: 0 }] });

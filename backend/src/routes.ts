@@ -7,7 +7,7 @@ import type { Config } from './config.ts';
 import type { ChatService } from './service.ts';
 import { digest, hashPassword, identity, opaqueToken, verifyPassword } from './security.ts';
 import { fail } from './errors.ts';
-import { UPLOAD_BODY_LIMIT } from './upload.ts';
+import { UPLOAD_BODY_LIMIT_VIDEO } from './upload.ts';
 import * as Schema from './schemas.ts';
 
 const secured = (tag: string, summary: string) => ({ tags: [tag], summary, security: [{ bearerAuth: [] }] });
@@ -167,6 +167,88 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
     return { items: rows.slice(0, limit).map(row => service.user(row.id)), nextOffset: rows.length > limit ? offset + limit : null };
   });
 
+  /*
+   * 访客资料与广场（契约 §2 §4）。
+   *
+   * 注册顺序注意：`GET /users/me` 已在上面注册（固定段），`GET /users` 搜索也已注册。
+   * 这里新增的 `/users/:userId` 用 `format: 'uuid'` 约束参数 —— 非 UUID 的路径段
+   * （将来若有 `/users/settings` 之类）会在 schema 校验阶段直接 400，
+   * 而不会悄悄命中「按 id 查用户」这条路由。
+   */
+  app.get('/api/v1/users/:userId', {
+    schema: { ...secured('Users', '查看他人资料及与我的关系'), params: Schema.UserIdParams,
+      response: { 200: Schema.UserProfileView, ...Schema.ErrorResponses } },
+  }, async request => service.getUserProfile(identity(request).userId, request.params.userId));
+
+  app.get('/api/v1/users/:userId/posts', {
+    schema: { ...secured('Posts', '查看某人在广场发布的帖子'), params: Schema.UserIdParams,
+      querystring: Schema.CursorQuery,
+      response: { 200: Schema.PostPage, ...Schema.ErrorResponses } },
+  }, async request => service.listUserPosts(identity(request).userId, request.params.userId,
+    request.query.cursor, request.query.limit));
+
+  app.get('/api/v1/posts', {
+    schema: { ...secured('Posts', '广场帖子流（按发布时间倒序，游标分页）'),
+      querystring: Schema.CursorQuery,
+      response: { 200: Schema.PostPage, ...Schema.ErrorResponses } },
+  }, async request => service.listPosts(identity(request).userId, request.query.cursor, request.query.limit));
+
+  app.post('/api/v1/posts', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    schema: { ...secured('Posts', '发布帖子（正文与附件至少一项，附件仅图片/视频）'),
+      body: Schema.CreatePostBody,
+      response: { 201: Schema.Post, ...Schema.ErrorResponses } },
+  }, async (request, reply) => reply.code(201).send(
+    service.createPost(identity(request).userId, request.body.content, request.body.attachmentIds)));
+
+  app.get('/api/v1/posts/:postId', {
+    schema: { ...secured('Posts', '查看单个帖子'), params: Schema.PostIdParams,
+      response: { 200: Schema.Post, ...Schema.ErrorResponses } },
+  }, async request => service.getPost(identity(request).userId, request.params.postId));
+
+  app.delete('/api/v1/posts/:postId', {
+    schema: { ...secured('Posts', '删除帖子（作者或管理员，软删）'), params: Schema.PostIdParams,
+      response: { 204: Type.Null({ description: '帖子已删除，无响应体' }), ...Schema.ErrorResponses } },
+  }, async (request, reply) => {
+    service.deletePost(identity(request).userId, request.params.postId, service.isAdmin(identity(request).userId));
+    return reply.code(204).send(null);
+  });
+
+  app.post('/api/v1/posts/:postId/like', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    schema: { ...secured('Posts', '点赞（重复点赞幂等）'), params: Schema.PostIdParams,
+      response: { 200: Schema.PostLikeResult, ...Schema.ErrorResponses } },
+  }, async request => service.likePost(identity(request).userId, request.params.postId));
+
+  app.delete('/api/v1/posts/:postId/like', {
+    config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    schema: { ...secured('Posts', '取消点赞（未点赞时幂等）'), params: Schema.PostIdParams,
+      response: { 200: Schema.PostLikeResult, ...Schema.ErrorResponses } },
+  }, async request => service.unlikePost(identity(request).userId, request.params.postId));
+
+  app.get('/api/v1/posts/:postId/comments', {
+    schema: { ...secured('Posts', '帖子评论列表（按时间正序，游标分页）'), params: Schema.PostIdParams,
+      querystring: Schema.CursorQuery,
+      response: { 200: Schema.PostCommentPage, ...Schema.ErrorResponses } },
+  }, async request => service.listPostComments(request.params.postId, request.query.cursor, request.query.limit));
+
+  app.post('/api/v1/posts/:postId/comments', {
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    schema: { ...secured('Posts', '发表评论（可回复同帖内已有评论）'), params: Schema.PostIdParams,
+      body: Schema.CreateCommentBody,
+      response: { 201: Schema.PostComment, ...Schema.ErrorResponses } },
+  }, async (request, reply) => reply.code(201).send(service.createPostComment(identity(request).userId,
+    request.params.postId, request.body.content, request.body.replyToId ?? null)));
+
+  app.delete('/api/v1/posts/:postId/comments/:commentId', {
+    schema: { ...secured('Posts', '删除评论（作者或管理员，软删）'), params: Schema.PostCommentParams,
+      response: { 204: Type.Null({ description: '评论已删除，无响应体' }), ...Schema.ErrorResponses } },
+  }, async (request, reply) => {
+    service.deletePostComment(identity(request).userId, request.params.postId, request.params.commentId,
+      service.isAdmin(identity(request).userId));
+    return reply.code(204).send(null);
+  });
+
   app.get('/api/v1/friends', {
     schema: {
       ...secured('Friends', '获取好友列表'),
@@ -265,13 +347,13 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
     request.params.userId, request.body.role));
 
   app.post('/api/v1/conversations/:conversationId/members', {
-    schema: { ...secured('Conversations', '群主邀请自己的好友入群'), params: Schema.ConversationParams,
+    schema: { ...secured('Conversations', '群主或管理员邀请自己的好友入群'), params: Schema.ConversationParams,
       body: Type.Object({ memberIds: MemberIds }, { additionalProperties: false }),
       response: { 200: Schema.Conversation, ...Schema.ErrorResponses } },
   }, async request => service.addMembers(request.params.conversationId, identity(request).userId, request.body.memberIds));
 
   app.delete('/api/v1/conversations/:conversationId/members/:userId', {
-    schema: { ...secured('Conversations', '群主移除成员，或普通成员退群'), params: Type.Object({ conversationId: Schema.Id, userId: Schema.Id }),
+    schema: { ...secured('Conversations', '群主或管理员移除成员，或成员自己退群'), params: Type.Object({ conversationId: Schema.Id, userId: Schema.Id }),
       response: { 200: Schema.Success, ...Schema.ErrorResponses } },
   }, async request => service.removeMember(request.params.conversationId, identity(request).userId, request.params.userId));
 
@@ -285,17 +367,24 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
 
   app.post('/api/v1/conversations/:conversationId/messages', {
     config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
-    schema: { ...secured('Messages', '发送文本或附件消息，以 clientMsgId 幂等重试'), params: Schema.ConversationParams,
-      // type 保持可选且只接受 'text'：老客户端与老测试都带 type:'text'，必须继续可用；
-      // 附件消息的 type 一律由服务端按上传记录的 kind 推导，客户端传什么都不作数（防伪造）。
-      body: Type.Object({ clientMsgId: Schema.Id, type: Type.Optional(Type.Literal('text')),
-        content: Type.Optional(Schema.Text(4000)), attachmentId: Type.Optional(Schema.Id) }, { additionalProperties: false }),
+    schema: { ...secured('Messages', '发送消息（文本与 0~9 个附件，视频至多 1 个，可引用回复），以 clientMsgId 幂等重试'),
+      params: Schema.ConversationParams,
+      // v2 契约 §2：附件改为 id 数组，type 完全由服务端按上传记录的 kind 推导。
+      // 刻意不再接受客户端传 type —— 上传后 type 与 kind 必须一致，让客户端可写会造出
+      // 「type=text 但带 9 张图」这种前端无法渲染的消息。additionalProperties:false 会把
+      // 旧客户端的 { type: 'text' } 直接判 400（前端须按 v2 契约去掉该字段）。
+      body: Schema.SendMessageBody,
       response: { 200: Schema.Message, 201: Schema.Message, ...Schema.ErrorResponses } },
   }, async (request, reply) => {
     const result = service.sendMessage(request.params.conversationId, identity(request).userId,
-      request.body.clientMsgId, request.body.content, request.body.attachmentId);
+      request.body.clientMsgId, request.body.content, request.body.attachmentIds, request.body.replyToMsgId ?? null);
     return reply.code(result.created ? 201 : 200).send(result.message);
   });
+
+  app.post('/api/v1/conversations/:conversationId/messages/:msgId/recall', {
+    schema: { ...secured('Messages', '撤回自己 120 秒内发出的消息'), params: Schema.RecallParams,
+      response: { 200: Schema.Message, ...Schema.ErrorResponses } },
+  }, async request => service.recallMessage(request.params.conversationId, identity(request).userId, request.params.msgId));
 
   app.post('/api/v1/conversations/:conversationId/read', {
     schema: { ...secured('Messages', '提交单调递增的已读位置'), params: Schema.ConversationParams,
@@ -367,7 +456,7 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
   }, async request => service.muteUser(identity(request).userId, request.params.uid, request.body.minutes));
 
   app.delete('/api/v1/admin/users/:uid', {
-    schema: { ...secured('Admin', '删除账号（连同其消息、会话关系与 WS 连接）'), params: Schema.AdminUserParams,
+    schema: { ...secured('Admin', '删除账号（连同其消息、广场内容、会话关系与 WS 连接）'), params: Schema.AdminUserParams,
       response: { 204: Type.Null({ description: '账号已删除，无响应体' }), ...Schema.ErrorResponses } },
   }, async (request, reply) => {
     service.deleteUser(identity(request).userId, request.params.uid);
@@ -382,8 +471,13 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
   /*
    * 上传接口：单独开一个封装插件作用域。
    * fastify 的每个插件实例持有独立的 content type parser 副本（plugin-override.js），
-   * 因此这里的通配 parser 只影响本作用域内的路由，全局 32KiB 的 JSON 契约完全不动 ——
-   * 把 bodyLimit 调大放在全局是错的，那会让所有接口都能收 11MiB。
+   * 因此这里的通配 parser 只影响本作用域内的路由，全局 64KiB 的 JSON 契约完全不动 ——
+   * 把 bodyLimit 调大放在全局是错的，那会让所有接口都能收 100MiB。
+   *
+   * v2 起视频上限 100 MiB，但**解析阶段无法知道这次上传的是不是视频**（body 是裸二进制，
+   * kind 要等魔数嗅探才知道）。所以传输层统一放到最宽的视频上限，由 service 按嗅探出的
+   * mimeType 在 MAX_VIDEO_BYTES / MAX_UPLOAD_BYTES 之间选真正的业务上限并返回 413 ——
+   * 否则 11 MiB 的解析上限会先把所有视频挡掉，且在 service 之前就拒绝，错误码只剩 transport 语义。
    */
   instance.register(async scope => {
     const uploads = scope.withTypeProvider<TypeBoxTypeProvider>();
@@ -391,11 +485,11 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
     // 上传接口对 Content-Type 完全不敏感（真实类型由服务端嗅探魔数决定），
     // 若保留 json parser，客户端带 application/json 上传会被按 JSON 解析并直接 400。
     uploads.removeAllContentTypeParsers();
-    uploads.addContentTypeParser('*', { parseAs: 'buffer', bodyLimit: UPLOAD_BODY_LIMIT },
+    uploads.addContentTypeParser('*', { parseAs: 'buffer', bodyLimit: UPLOAD_BODY_LIMIT_VIDEO },
       (_request, body, done) => done(null, body));
 
     uploads.post('/api/v1/uploads', {
-      bodyLimit: UPLOAD_BODY_LIMIT,
+      bodyLimit: UPLOAD_BODY_LIMIT_VIDEO,
       config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
       schema: { ...secured('Uploads', '上传文件（请求体为裸二进制，服务端按魔数嗅探真实类型）'),
         querystring: Schema.UploadQuery,
@@ -409,7 +503,7 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
     });
 
     uploads.get('/api/v1/uploads/:id', {
-      schema: { ...secured('Uploads', '下载上传的文件（仅属主可读，响应为原始字节）'),
+      schema: { ...secured('Uploads', '下载上传的文件（本人、同会话成员、广场帖子引用者或头像引用者可读，响应为原始字节）'),
         params: Schema.UploadParams,
         // 刻意不声明 200 的 JSON schema：响应体是原始字节，
         // 一旦声明了序列化器就会介入，把 Buffer 序列化成 JSON。
@@ -433,7 +527,7 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
     });
 
     uploads.delete('/api/v1/uploads/:id', {
-      schema: { ...secured('Uploads', '删除未被任何消息引用的上传文件'),
+      schema: { ...secured('Uploads', '删除自己的、未被任何消息或广场帖子引用的上传文件'),
         params: Schema.UploadParams,
         response: { 204: Type.Null({ description: '文件已删除，无响应体' }), ...Schema.ErrorResponses } },
     }, async (request, reply) => {

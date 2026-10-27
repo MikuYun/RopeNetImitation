@@ -38,6 +38,11 @@ function wireMessage(seq: number, content = `m${seq}`): WireMessage {
     seq,
     type: 'text',
     content,
+    // v2 新形状：附件事必填（无附件是 `[]`），撤回国与引用国未激活
+    attachments: [],
+    recalled: false,
+    recalledAt: null,
+    replyTo: null,
     createdAt: '2026-10-22T00:00:00.000Z',
   }
 }
@@ -192,5 +197,74 @@ describe('message store 登出代际隔离', () => {
     expect(store.messagesOf('c1').map((m) => m.seq)).toEqual([7, 10])
     expect(store.hasMoreOlder('c1')).toBe(false)
     expect(store.isLoading('c1')).toBe(false)
+  })
+})
+
+/*
+ * ── upsertMessage：`message.updated`（撤回是目前唯一场景）的写入路径 ──
+ *
+ * 与 `insertOrIgnore` 的语义差别是这一组用例的全部意义：
+ *   - insertOrIgnore 是「已存在则忽略」，专为追加新消息；
+ *   - upsertMessage 是「以服务端最新版本为准」，已存在必须原地替换。
+ *
+ * 用错会出两类线上事故：撤回不生效（旧内容继续显示），或撤回后消息
+ * 因为没有 pending 兑现而出现两份。
+ */
+describe('message store upsertMessage（message.updated 覆盖式写入）', () => {
+  function wireMsg(seq: number, over: Partial<WireMessage> = {}): WireMessage {
+    return { ...wireMessage(seq), ...over }
+  }
+
+  it('已存在的消息被原地替换，且 seq 顺序不变（撤回后不能挪到末尾）', () => {
+    const store = useMessageStore()
+    store.insertOrIgnore(wireMsg(10))
+    store.insertOrIgnore(wireMsg(12))
+
+    store.upsertMessage(wireMsg(10, { content: '', recalled: true, recalledAt: '2026-10-22T00:01:00.000Z' }))
+
+    const list = store.messagesOf('c1')
+    expect(list.map((m) => m.seq)).toEqual([10, 12])
+    expect(list[0]?.recalled).toBe(true)
+    expect(list[0]?.content).toBe('')
+    // 服务端来的消息永远视为已确认态
+    expect(list[0]?.status).toBe('sent')
+    expect(list[1]?.recalled).toBe(false)
+  })
+
+  it('本地没有该消息时必须插入（先收撤回推送、后翻历史不能看到原文）', () => {
+    const store = useMessageStore()
+    store.insertOrIgnore(wireMsg(10))
+
+    store.upsertMessage(wireMsg(8, { content: '', recalled: true }))
+
+    expect(store.messagesOf('c1').map((m) => m.seq)).toEqual([8, 10])
+    expect(store.messagesOf('c1')[0]?.recalled).toBe(true)
+  })
+
+  it('撤回推送带着自己的 clientMsgId 时，pending 里的乐观消息被兑现掉（不出现两份）', () => {
+    const store = useMessageStore()
+    const local = store.appendOptimistic({ conversationId: 'c1', senderId: 'u-self', content: 'hi' })
+    expect(store.pendingOf('c1')).toHaveLength(1)
+
+    store.upsertMessage({
+      ...wireMsg(3),
+      msgId: 'srv-3',
+      senderId: 'u-self',
+      clientMsgId: local.clientMsgId,
+      content: 'hi',
+    })
+
+    expect(store.pendingOf('c1')).toHaveLength(0)
+    expect(store.messagesOf('c1').map((m) => m.msgId)).toEqual(['srv-3'])
+  })
+
+  it('重复 upsert 同一条撤回消息是幂等的（WS 重连补偿会重放）', () => {
+    const store = useMessageStore()
+    store.insertOrIgnore(wireMsg(10))
+    const recalled = wireMsg(10, { content: '', recalled: true })
+    store.upsertMessage(recalled)
+    store.upsertMessage(recalled)
+    expect(store.messagesOf('c1')).toHaveLength(1)
+    expect(store.messagesOf('c1')[0]?.recalled).toBe(true)
   })
 })

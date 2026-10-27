@@ -1,5 +1,5 @@
 /**
- * 消息端点。路径与响应以后端 openapi.json **v0.2.0** 为准。
+ * 消息端点。路径与响应以后端 openapi.json **v0.3.0**（docs/v2/API-V2.md）为准。
  *
  * 后端分页响应为 {items, hasMore, nextBeforeSeq, nextAfterSeq}；
  * 游标仍是 seq，语义与需求书等价。
@@ -39,28 +39,50 @@ export async function fetchMessages(
 }
 
 /**
- * 发消息请求体。
+ * 发消息请求体（v2）。
  *
- * 附件消息的 `content` 可为空（服务端只要求「content 或 attachmentId 至少一个」），
- * `type` 由服务端按附件 kind 推导。
+ * 【关键：只传存在的字段】后端请求体一律 `additionalProperties: false`，
+ * 多传一个字段就是 400 VALIDATION_ERROR。因此组 body 时需要逐字段判断，
+ * 而不是把 input 直接丢给 axios。
  *
- * `type` 是**可选的灰度兼容字段**（与后端 task-6 确认）：
- *   - 纯文本消息仍带 `type: 'text'`，这样打到尚未升级的旧后端也不会 400
- *     （旧 schema 要求 type+content 必填）；
- *   - 附件消息不带 `type`（服务端会忽略并自行推导）；
- *   - 新后端的 `type` 只接受字面量 `'text'`，传其它值会被拒，故联合只写 'text'。
+ * 【content 空串必须省略】后端 schema 是 `content?: String(minLength 1, maxLength 4000)`：
+ * 传 `''` 会因 minLength 1 被拒。纯附件消息（无文字）在 v2 下本来也发不出去
+ * （产品要求「附件必须配文字」），所以省略是正确行为而不是降级。
+ *
+ * 【attachmentIds】1..9，unique；video ≤1、image ≤9、合计 ≤9。
+ * 这些组合规则前端也要先拦（见 utils/attachments.ts#checkAttachmentSelection），
+ * 客户端先行校验能省一次往返、错误文案也更贴近产品语言。
  */
 export interface SendMessageInput {
   clientMsgId: string
-  type?: 'text'
   content?: string
-  attachmentId?: string
+  attachmentIds?: string[]
+  replyToMsgId?: string | null
+}
+
+/** 把领域层的 SendMessageInput 转成**只含存在字段**的请求体。 */
+function toSendBody(input: SendMessageInput): Record<string, unknown> {
+  const body: Record<string, unknown> = { clientMsgId: input.clientMsgId }
+  // 空串 / 纯空白不上送：后端 minLength 1 会拒
+  const content = input.content?.trim()
+  if (content) body['content'] = content
+  if (input.attachmentIds && input.attachmentIds.length > 0) {
+    body['attachmentIds'] = input.attachmentIds
+  }
+  // 只有存在引用时才传 replyToMsgId（不传不等于 null，但少传一个字段更安全）
+  if (input.replyToMsgId) body['replyToMsgId'] = input.replyToMsgId
+  return body
 }
 
 /**
  * 发消息。
  * 首次持久化返回 **201**；同 clientMsgId 同内容重试返回 **200 原消息**；
  * 重用同 id 改会话/正文返回 **409 IDEMPOTENCY_CONFLICT**。
+ *
+ * 可能抛的业务错：
+ *   - 409 `UPLOAD_IN_USE`：附件已被别的消息引用（选中的图同时被另一个窗口发了）
+ *   - 400 `ATTACHMENT_LIMIT`：附件组合超限
+ *   - 400 `VALIDATION_ERROR`：有附件但 content 为空
  */
 export async function sendMessage(
   conversationId: string,
@@ -68,7 +90,26 @@ export async function sendMessage(
 ): Promise<DomainWireMessage> {
   const { data } = await http.post<WireMessage>(
     `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
-    input,
+    toSendBody(input),
+  )
+  return toWireMessage(data)
+}
+
+/**
+ * 撤回消息（v2）。仅作者本人、且 `createdAt` 距今 ≤ 120 秒。
+ *
+ * 成功返回**已脱敏的** Message（`recalled=true`、`content=''`、`attachments=[]`）。
+ * 调用方必须用返回值 `upsertMessage()` 到 store —— 不要自己手改字段，
+ * 服务端可能还改了其它字段。
+ *
+ * 超过时限 → 403 `RECALL_WINDOW_EXPIRED`。
+ */
+export async function recallMessage(
+  conversationId: string,
+  msgId: string,
+): Promise<DomainWireMessage> {
+  const { data } = await http.post<WireMessage>(
+    `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(msgId)}/recall`,
   )
   return toWireMessage(data)
 }

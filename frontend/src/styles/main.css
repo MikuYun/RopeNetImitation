@@ -2,8 +2,10 @@
 @import './theme.css';
 
 /* Tailwind v4：把运行时主题变量暴露为工具类可用的 token。
-   data-theme 在 <html> 上切换，故需 dark 变体跟随 data-theme 而非 media。 */
-@custom-variant dark (&:where([data-theme='dark'], [data-theme='dark'] *));
+   dark 变体跟随 <html> 上的**语义明暗**属性 data-theme-mode，而不是
+   data-theme：data-theme 是 7 套主题 id，data-theme-mode 只有 light/dark。
+   否则每新增一套彩主题就得回头把所有 dark: 选择器再列一遍。 */
+@custom-variant dark (&:where([data-theme-mode='dark'], [data-theme-mode='dark'] *));
 
 @layer base {
   * {

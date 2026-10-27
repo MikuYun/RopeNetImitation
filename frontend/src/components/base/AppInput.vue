@@ -197,11 +197,11 @@ const hasError = computed(() => props.error.length > 0)
 }
 
 /* ── 深色：输入框面比卡片略亮，才不像「挖了个洞」────────────────── */
-:root[data-theme='dark'] .field__input {
+:root[data-theme-mode='dark'] .field__input {
   background: color-mix(in srgb, var(--app-panel-raised) 88%, #000);
   border-color: var(--app-border-strong);
 }
-:root[data-theme='dark'] .field__input:focus {
+:root[data-theme-mode='dark'] .field__input:focus {
   background: var(--app-panel-raised);
 }
 

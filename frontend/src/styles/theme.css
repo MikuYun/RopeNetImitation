@@ -221,8 +221,12 @@
   --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 12%, #ffffff);
   --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-500) 20%, #ffffff);
 
-  /* 消息气泡：自己 / 对方。原创配色，非任何产品的绿色。 */
-  --bubble-self-bg: var(--color-brand-500);
+  /* 消息气泡：自己 / 对方。
+     自己的气泡底写死 #1a7da2 而不是 var(--color-brand-500)：brand-500
+     (#1d88b0) 白字只有 4.04:1，低于 WCAG AA 4.5:1。#1a7da2 是同一个
+     色相暗两档的结果，白字 4.67:1，肉眼几乎看不出与主色的差异，
+     但不会为了达标而把气泡换成 brand-600(#166d92) 那种灰蓝。 */
+  --bubble-self-bg: #1a7da2;
   --bubble-self-text: #ffffff;
   --bubble-peer-bg: #ffffff;
   --bubble-peer-text: var(--color-ink-900);
@@ -274,7 +278,12 @@
  * 逐层提亮 4–6 个明度点，配合更重的黑色投影与更亮的品牌色（400 而非 500），
  * 保证主色在深底上对比度足够。
  * ========================================================================== */
-:root[data-theme='dark'] {
+/* 深色同时挂两个钩子：
+ *   data-theme='dark'       —— 用户显式选了「深色」
+ *   data-theme-mode='dark'  —— 语义暗色兜底（midnight、以及面板被调暗的自定义主题）
+ * 后者保证「彩主题是暗色系」时不用再抄一遍深色令牌。 */
+:root[data-theme='dark'],
+:root[data-theme-mode='dark'] {
   --app-bg: #0b0f14;
   --app-panel: #131820;
   --app-panel-alt: #171d26;
@@ -328,4 +337,331 @@
 
   --shadow-panel: var(--shadow-1);
   --shadow-pop: var(--shadow-3);
+}
+
+/* ============================================================================
+ * ⑤ 预置彩主题（海洋 / 森林 / 樱花 / 午夜）
+ * ----------------------------------------------------------------------------
+ * 全部规则都挂在 :root[data-theme='xxx'] 上，因此天然覆盖 :root 的亮色默认，
+ * 而暗色兜底（上一段）排在它们之前 —— 同为 0,2,0 权重下后者胜出，
+ * 所以 midnight 既能吃到深色投影，又能覆盖自己的霓虹配色。
+ *
+ * 每套必须覆盖的清单（漏一条就会串色，因为内联值和主题值不会自动兜住）：
+ *   --color-brand-300..700 / --color-accent-400..600 / --gradient-brand
+ *   --app-bg|panel|panel-alt|panel-raised|border|border-strong
+ *   --app-text|text-muted|text-faint|hover|active|brand-tint|brand-tint-strong
+ *   --bubble-self-bg|self-text|peer-bg|peer-text
+ *   --chat-canvas / --chat-canvas-image / --app-ambient
+ *   --shadow-color / --shadow-brand
+ *
+ * 对比度是按 WCAG 2.1 相对亮度算过的（正文 ≥4.5:1），算过的关键对：
+ *   ocean   正文 #0c2833 / 面板 #ffffff = 15.4:1
+ *   forest  正文 #1b2418 / 面板 #fffef9 = 15.9:1
+ *   sakura  正文 #2c1c24 / 面板 #ffffff = 16.2:1
+ *   midnight 正文 #eae7f6 / 面板 #141024 = 15.3:1
+ * 气泡：白字压在这些 500 号色上都在 4.6~5.3:1（ocean 4.64 / forest 5.04 /
+ * sakura 5.25），均 ≥4.5:1；midnight 反过来用深字压霓虹青 = 7.98:1。
+ * 注意 --gradient-brand 也要换：主按钮吃的是这张渐变图，不换就还是蓝的。
+ * ========================================================================== */
+
+/* ── 海洋：深蓝青，冷调亮色系 ──────────────────────────────────────── */
+:root[data-theme='ocean'] {
+  --color-brand-300: #8fd6e6;
+  --color-brand-400: #3facc4;
+  --color-brand-500: #0d7f9b;
+  --color-brand-600: #0a6780;
+  --color-brand-700: #084f63;
+
+  --color-accent-400: #4ad3c4;
+  --color-accent-500: #17a894;
+  --color-accent-600: #0d8a7a;
+
+  --gradient-brand: linear-gradient(135deg, #084f63 0%, #0d7f9b 46%, #17a894 100%);
+
+  --app-bg: #e8f3f8;
+  --app-panel: #ffffff;
+  --app-panel-alt: #f2f9fc;
+  --app-panel-raised: #ffffff;
+  --app-border: #d5e7ef;
+  --app-border-strong: #b8d6e3;
+  --app-text: #0c2833;
+  --app-text-muted: #3d6270;
+  --app-text-faint: #5c8291;
+  --app-hover: #e1eef5;
+  --app-active: #d4e6ef;
+
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 14%, #ffffff);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-500) 22%, #ffffff);
+
+  --bubble-self-bg: var(--color-brand-500);
+  --bubble-self-text: #ffffff;
+  --bubble-peer-bg: #ffffff;
+  --bubble-peer-text: #0c2833;
+
+  --chat-canvas: #e2eff6;
+  --chat-canvas-image: radial-gradient(
+      120% 90% at 8% 0%,
+      color-mix(in srgb, var(--color-brand-500) 12%, transparent) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      110% 80% at 100% 100%,
+      color-mix(in srgb, var(--color-accent-400) 10%, transparent) 0%,
+      transparent 55%
+    );
+  --app-ambient: radial-gradient(
+      60% 55% at 18% 12%,
+      color-mix(in srgb, var(--color-brand-500) 16%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      55% 50% at 88% 88%,
+      color-mix(in srgb, var(--color-accent-500) 14%, transparent) 0%,
+      transparent 70%
+    );
+
+  --shadow-color: 8 45 60;
+  --shadow-brand: 0 6px 18px rgb(13 127 155 / 0.28);
+}
+
+/* ── 森林：墨绿 + 米色，暖调亮色系 ────────────────────────────────── */
+:root[data-theme='forest'] {
+  --color-brand-300: #8ec9a6;
+  --color-brand-400: #4f9e70;
+  --color-brand-500: #2f7d4f;
+  --color-brand-600: #22643e;
+  --color-brand-700: #17462d;
+
+  --color-accent-400: #cfa855;
+  --color-accent-500: #a9832f;
+  --color-accent-600: #86641f;
+
+  --gradient-brand: linear-gradient(135deg, #17462d 0%, #2f7d4f 52%, #a9832f 100%);
+
+  --app-bg: #f3f1e6;
+  --app-panel: #fffef9;
+  --app-panel-alt: #f9f7ee;
+  --app-panel-raised: #fffefb;
+  --app-border: #e4dfd1;
+  --app-border-strong: #cdc7b5;
+  --app-text: #1b2418;
+  --app-text-muted: #4e5c45;
+  --app-text-faint: #6c7a61;
+  --app-hover: #eae6d8;
+  --app-active: #e0dbca;
+
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 13%, #fffef9);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-500) 20%, #fffef9);
+
+  --bubble-self-bg: var(--color-brand-500);
+  --bubble-self-text: #ffffff;
+  --bubble-peer-bg: #fffef9;
+  --bubble-peer-text: #1b2418;
+
+  --chat-canvas: #edeade;
+  --chat-canvas-image: radial-gradient(
+      120% 90% at 8% 0%,
+      color-mix(in srgb, var(--color-brand-500) 10%, transparent) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      110% 80% at 100% 100%,
+      color-mix(in srgb, var(--color-accent-500) 10%, transparent) 0%,
+      transparent 55%
+    );
+  --app-ambient: radial-gradient(
+      60% 55% at 18% 12%,
+      color-mix(in srgb, var(--color-brand-400) 16%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      55% 50% at 88% 88%,
+      color-mix(in srgb, var(--color-accent-500) 14%, transparent) 0%,
+      transparent 70%
+    );
+
+  --shadow-color: 30 40 26;
+  --shadow-brand: 0 6px 18px rgb(47 125 79 / 0.26);
+}
+
+/* ── 樱花：粉 + 奶白，柔和亮色系 ──────────────────────────────────── */
+:root[data-theme='sakura'] {
+  --color-brand-300: #f0aec7;
+  --color-brand-400: #d96a95;
+  --color-brand-500: #b83f74;
+  --color-brand-600: #9c2f5e;
+  --color-brand-700: #7d2549;
+
+  --color-accent-400: #f0b978;
+  --color-accent-500: #cf9445;
+  --color-accent-600: #a8742f;
+
+  --gradient-brand: linear-gradient(135deg, #7d2549 0%, #b83f74 48%, #cf9445 100%);
+
+  --app-bg: #fbf3f6;
+  --app-panel: #ffffff;
+  --app-panel-alt: #fdf8fa;
+  --app-panel-raised: #ffffff;
+  --app-border: #f4e3ea;
+  --app-border-strong: #e7cdd8;
+  --app-text: #2c1c24;
+  --app-text-muted: #6d4f5c;
+  --app-text-faint: #8a6875;
+  --app-hover: #f9ecf1;
+  --app-active: #f4e0e8;
+
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 14%, #ffffff);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-500) 20%, #ffffff);
+
+  --bubble-self-bg: var(--color-brand-500);
+  --bubble-self-text: #ffffff;
+  --bubble-peer-bg: #ffffff;
+  --bubble-peer-text: #2c1c24;
+
+  --chat-canvas: #f8edf2;
+  --chat-canvas-image: radial-gradient(
+      120% 90% at 8% 0%,
+      color-mix(in srgb, var(--color-brand-400) 14%, transparent) 0%,
+      transparent 58%
+    ),
+    radial-gradient(
+      110% 80% at 100% 100%,
+      color-mix(in srgb, var(--color-accent-400) 11%, transparent) 0%,
+      transparent 55%
+    );
+  --app-ambient: radial-gradient(
+      60% 55% at 18% 12%,
+      color-mix(in srgb, var(--color-brand-400) 18%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      55% 50% at 88% 88%,
+      color-mix(in srgb, var(--color-accent-400) 15%, transparent) 0%,
+      transparent 70%
+    );
+
+  --shadow-color: 60 30 42;
+  --shadow-brand: 0 6px 18px rgb(184 63 116 / 0.26);
+}
+
+/* ── 午夜：深紫黑 + 霓虹青，暗色系（themeMode = dark）─────────────── */
+:root[data-theme='midnight'] {
+  --color-brand-300: #a5eef6;
+  --color-brand-400: #62dcec;
+  --color-brand-500: #24c4d8;
+  --color-brand-600: #17a0b2;
+  --color-brand-700: #10808f;
+
+  --color-accent-400: #b18cff;
+  --color-accent-500: #9463f5;
+  --color-accent-600: #7746d8;
+
+  /* 主按钮是白字压渐变，所以渐变取暗一档的霓虹，不用亮青（白字压亮青只有 2.1:1）*/
+  --gradient-brand: linear-gradient(135deg, #0d5f6b 0%, #10808f 46%, #5a3aa8 100%);
+
+  --app-bg: #0b0814;
+  --app-panel: #141024;
+  --app-panel-alt: #1a1530;
+  --app-panel-raised: #211a3a;
+  --app-border: #2e2548;
+  --app-border-strong: #42356a;
+  --app-text: #eae7f6;
+  --app-text-muted: #a9a2c6;
+  --app-text-faint: #857ea8;
+  --app-hover: #221a3c;
+  --app-active: #2b2149;
+
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 16%, #141024);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-400) 26%, #141024);
+
+  /* 反常规：霓虹青气泡配深字，一眼就能和别的暗色主题区分开 */
+  --bubble-self-bg: #24c4d8;
+  --bubble-self-text: #06202a;
+  --bubble-peer-bg: #241d3e;
+  --bubble-peer-text: #eae7f6;
+
+  --chat-canvas: #0d0a17;
+  --chat-canvas-image: radial-gradient(
+      120% 90% at 10% 0%,
+      color-mix(in srgb, var(--color-brand-500) 18%, transparent) 0%,
+      transparent 60%
+    ),
+    radial-gradient(
+      110% 80% at 100% 100%,
+      color-mix(in srgb, var(--color-accent-500) 20%, transparent) 0%,
+      transparent 58%
+    );
+  --app-ambient: radial-gradient(
+      60% 55% at 16% 10%,
+      color-mix(in srgb, var(--color-brand-500) 20%, transparent) 0%,
+      transparent 72%
+    ),
+    radial-gradient(
+      55% 50% at 90% 92%,
+      color-mix(in srgb, var(--color-accent-500) 18%, transparent) 0%,
+      transparent 72%
+    );
+
+  --shadow-color: 0 0 0;
+  --shadow-brand: 0 6px 22px rgb(36 196 216 / 0.32);
+}
+
+/* ============================================================================
+ * ⑥ 自定义主题兜底
+ * ----------------------------------------------------------------------------
+ * 这里只是「JS 还没跑 / 首帧」的兜底，值等同亮色默认；真正的配色由
+ * stores/ui.ts 的 applyTheme() 写成 <html> 上的内联变量（内联优先级高于
+ * 任何选择器，所以这段不会跟用户的选择打架）。
+ * 仍然写一份的原因：applyTheme 之前若有一帧渲染（比如 noscript 或样式先到），
+ * 页面不至于变成无主题的裸白。
+ * ========================================================================== */
+:root[data-theme='custom'] {
+  --color-brand-300: #74c4e2;
+  --color-brand-400: #3ba6cd;
+  --color-brand-500: #1d88b0;
+  --color-brand-600: #166d92;
+  --color-brand-700: #145878;
+
+  --color-accent-400: #35c2b0;
+  --color-accent-500: #14a898;
+  --color-accent-600: #0f8a7d;
+
+  --gradient-brand: linear-gradient(135deg, #145878 0%, #1d88b0 46%, #14a898 100%);
+
+  --app-bg: #f2f5f9;
+  --app-panel: #ffffff;
+  --app-panel-alt: #f8fafc;
+  --app-panel-raised: #ffffff;
+  --app-border: #e3e9f0;
+  --app-border-strong: #cfd8e2;
+  --app-text: #131a21;
+  --app-text-muted: #5b6675;
+  --app-text-faint: #8a949f;
+  --app-hover: #eef2f7;
+  --app-active: #e2e9f1;
+
+  --app-brand-tint: color-mix(in srgb, var(--color-brand-400) 12%, #ffffff);
+  --app-brand-tint-strong: color-mix(in srgb, var(--color-brand-500) 20%, #ffffff);
+
+  --bubble-self-bg: var(--color-brand-500);
+  --bubble-self-text: #ffffff;
+  --bubble-peer-bg: #ffffff;
+  --bubble-peer-text: #131a21;
+
+  --chat-canvas: #eef2f7;
+  --chat-canvas-image: none;
+
+  --app-ambient: radial-gradient(
+      60% 55% at 18% 12%,
+      color-mix(in srgb, var(--color-brand-400) 14%, transparent) 0%,
+      transparent 70%
+    ),
+    radial-gradient(
+      55% 50% at 88% 88%,
+      color-mix(in srgb, var(--color-accent-500) 12%, transparent) 0%,
+      transparent 70%
+    );
+
+  --shadow-color: 19 30 45;
+  --shadow-brand: 0 6px 18px rgb(29 136 176 / 0.28);
 }

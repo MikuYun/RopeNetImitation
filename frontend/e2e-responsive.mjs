@@ -208,7 +208,6 @@ async function seedConversation() {
       headers: H(who.token),
       body: JSON.stringify({
         clientMsgId: crypto.randomUUID(),
-        type: 'text',
         content: texts[i],
       }),
     })
@@ -290,9 +289,9 @@ async function main() {
     await assertNoHorizontalOverflow(page, vp.name)
     await shot(page, `${vp.name}-list`)
 
-    // 底部导航存在且只有两个主 tab + 更多
+    // 底部导航存在且只有两个主 tab + 个人信息（v2 需求 1：原「更多」位改为「个人信息」）
     const navTabs = await page.locator('.mnav__tab').count()
-    check(`${vp.name} 底部导航存在（2 tab + 更多）`, navTabs === 3, `tab 数=${navTabs}`)
+    check(`${vp.name} 底部导航存在（2 tab + 个人信息）`, navTabs === 3, `tab 数=${navTabs}`)
 
     // 竖侧栏（PC 用）不应出现在手机 DOM 里
     const railVisible = await page.locator('.rail').isVisible().catch(() => false)
@@ -354,19 +353,23 @@ async function main() {
       }
     }
 
-    // 「更多」面板：主题与注销必须可达
+    // 个人信息面板：主题与退出登录必须可达（v2 需求 1：原「更多」面板改为个人信息）
     await page.goto(`${BASE}/chat`, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(500)
     await page.locator('.mnav__tab').nth(2).click()
+    await page.waitForSelector('.psheet', { timeout: 10_000 })
     await page.waitForTimeout(400)
-    const sheetItems = await page.locator('.sheet__item').count()
-    check(`${vp.name} 更多面板含主题与注销`, sheetItems >= 2, `项数=${sheetItems}`)
-    await assertNoHorizontalOverflow(page, `${vp.name} 更多面板`)
-    await assertTouchTargets(page, ['.sheet__item', '.sheet__cancel'], `${vp.name} 更多面板`)
-    await shot(page, `${vp.name}-more`)
+    const sheetItems = await page.locator('.psheet__entry').count()
+    check(`${vp.name} 个人信息面板含主题与退出登录`, sheetItems >= 2, `项数=${sheetItems}`)
+    await assertNoHorizontalOverflow(page, `${vp.name} 个人信息面板`)
+    await assertTouchTargets(page, ['.psheet__entry', '.psheet__close'], `${vp.name} 个人信息面板`)
+    await shot(page, `${vp.name}-profile-sheet`)
 
-    // 深色主题
-    await page.locator('.sheet__item').first().click()
+    // 主题：点「主题」行展开 ThemePicker，再点「深色」卡片
+    const themeEntry = page.locator('.psheet__entry', { hasText: '主题' })
+    await themeEntry.click()
+    await page.waitForSelector('#psheet-theme-panel .tp__card', { timeout: 10_000 })
+    await page.locator('#psheet-theme-panel .tp__card[aria-label="深色"]').click()
     await page.waitForTimeout(400)
     const theme = await page.evaluate(() => document.documentElement.dataset.theme)
     check(`${vp.name} 主题可切换`, theme === 'dark' || theme === 'light', `theme=${theme}`)

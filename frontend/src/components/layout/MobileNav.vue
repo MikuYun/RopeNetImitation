@@ -3,31 +3,22 @@
  * 手机底部导航。
  *
  * 【为什么单独做一个组件而不是复用 AppRail】AppRail 是 PC 的**竖侧栏**，
- * 竖排、含头像、贴左边。手机上要的是横排、贴底部、只有两个 tab 的形态。
- * 用同一组件靠媒体查询变形会导致模板里塞满两套结构的条件渲染，难维护；
- * 分开后各自结构清晰，也让 PC 侧栏完全不进入移动端 DOM（少一批隐藏元素）。
+ * 竖排、含头像、贴左边。手机上要的是横排、贴底部、只有三个 tab 的形态。
  *
- * 结构约束（任务书 §三）：
- *   - 只保留「聊天」「联系人」两个 tab，不伪造其它产品有而本项目没有的入口
- *   - 主题与退出登录收进「更多」，保证在手机上仍然可达
- *   - 「更多」用底部面板（sheet），不用居中弹窗 —— 拇指可达性更好
- *   - 热区 >= 44x44（--spacing-touch-target）
+ * v2 变更（UI-V2 §3）：
+ *   - 第三位「更多」→「个人信息」，点击弹出上拉抽屉 `ProfileSheet`；
+ *     原来的「更多」底部面板（主题 / 退出登录）整体删除 —— 这两项已收进
+ *     个人信息抽屉与详细资料页。
+ *   - tab 仍带 `.mnav__tab` / `.mnav__label` 类名（e2e 选择器契约）。
  */
-import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import AppIcon from '@/components/base/AppIcon.vue'
-import { useAuthStore } from '@/stores/auth'
+import ProfileSheet from '@/components/profile/ProfileSheet.vue'
 import { useConversationStore } from '@/stores/conversation'
 import { useFriendStore } from '@/stores/friend'
 import { useUiStore } from '@/stores/ui'
-import {
-  collectFocusables,
-  dialogKeyAction,
-  initialFocusIndex,
-  type DialogKeyAction,
-} from '@/utils/dialogA11y'
 
-const auth = useAuthStore()
 const ui = useUiStore()
 const convStore = useConversationStore()
 const friendStore = useFriendStore()
@@ -52,91 +43,9 @@ async function goTab(tab: 'chats' | 'contacts'): Promise<void> {
   }
 }
 
-async function onLogout(): Promise<void> {
-  ui.closeMore()
-  await auth.logout()
-  void router.push({ name: 'login' })
+function openProfile(): void {
+  ui.openProfileDrawer()
 }
-
-/**
- * 「更多」面板的焦点管理 —— 与桌面 `AppModal` 共用 `@/utils/dialogA11y` 的判定。
- *
- * 【为什么需要】面板是 `role="dialog" aria-modal="true"`，但之前一行键盘处理都没有：
- *   - 按 Esc 关不掉（桌面弹层能关，手机面板不能 —— 同一产品的两条不一致契约）；
- *   - Tab 会从「取消」跑到 `<body>`，焦点离开可见区域，键盘/读屏用户直接卡住。
- * 现在两条都补齐，且**不碰**原有的遮罩点击关闭与「取消」按钮（那两条 e2e 已 PASS）。
- */
-const sheetRef = ref<HTMLElement | null>(null)
-/** 打开前的焦点位置，关闭时归还（与 AppModal 同一策略）。 */
-let restoreTarget: HTMLElement | null = null
-
-function focusIndexIn(list: HTMLElement[]): number {
-  const active = document.activeElement
-  if (!active) return -1
-  return list.indexOf(active as HTMLElement)
-}
-
-function runAction(action: DialogKeyAction, e: KeyboardEvent, list: HTMLElement[]): void {
-  if (!action) return
-  if (action.type === 'close') {
-    e.preventDefault()
-    ui.closeMore()
-    return
-  }
-  e.preventDefault()
-  const el = action.target === 'first' ? list[0] : list[list.length - 1]
-  el?.focus()
-}
-
-function onSheetKeydown(e: KeyboardEvent): void {
-  const list = collectFocusables(sheetRef.value)
-  runAction(
-    dialogKeyAction({
-      key: e.key,
-      shiftKey: e.shiftKey,
-      dialogOpen: ui.moreSheetOpen,
-      focusableCount: list.length,
-      focusIndex: focusIndexIn(list),
-      isComposing: e.isComposing,
-    }),
-    e,
-    list,
-  )
-}
-
-function restoreFocus(): void {
-  const target = restoreTarget
-  restoreTarget = null
-  // 退出登录后触发按钮所在的导航可能已被卸载，isConnected 判一下再还给元素。
-  if (target && target.isConnected) target.focus()
-}
-
-watch(
-  () => ui.moreSheetOpen,
-  async (open) => {
-    if (open) {
-      const active = document.activeElement
-      restoreTarget = active instanceof HTMLElement ? active : null
-      await nextTick()
-      const list = collectFocusables(sheetRef.value)
-      const idx = initialFocusIndex(list.length)
-      // idx === -1 时退到面板本身（`.sheet` 带 tabindex="-1"）。
-      if (idx >= 0) list[idx]?.focus()
-      else sheetRef.value?.focus()
-    } else {
-      restoreFocus()
-    }
-  },
-  { immediate: true },
-)
-
-onMounted(() => {
-  window.addEventListener('keydown', onSheetKeydown)
-})
-onUnmounted(() => {
-  window.removeEventListener('keydown', onSheetKeydown)
-  restoreFocus()
-})
 </script>
 
 <template>
@@ -167,38 +76,21 @@ onUnmounted(() => {
       <span class="mnav__label">联系人</span>
     </button>
 
-    <button class="mnav__tab" type="button" @click="ui.openMore()">
-      <span class="mnav__icon"><AppIcon name="more" :size="22" /></span>
-      <span class="mnav__label">更多</span>
+    <button
+      class="mnav__tab"
+      :class="{ 'mnav__tab--on': ui.profileDrawerOpen }"
+      type="button"
+      aria-haspopup="dialog"
+      :aria-expanded="ui.profileDrawerOpen"
+      @click="openProfile"
+    >
+      <span class="mnav__icon"><AppIcon name="user" :size="22" /></span>
+      <span class="mnav__label">个人信息</span>
     </button>
   </nav>
 
-  <!-- 更多：底部面板。主题与退出登录必须能在手机上到达。 -->
-  <Teleport to="body">
-    <Transition name="sheet">
-      <div v-if="ui.moreSheetOpen" class="mask" @click.self="ui.closeMore()">
-        <div
-          ref="sheetRef"
-          class="sheet"
-          role="dialog"
-          aria-modal="true"
-          aria-label="更多"
-          tabindex="-1"
-        >
-          <div class="sheet__handle" />
-          <button class="sheet__item" type="button" @click="ui.toggleTheme()">
-            <AppIcon :name="ui.theme === 'dark' ? 'sun' : 'moon'" :size="19" />
-            <span>{{ ui.theme === 'dark' ? '切换到浅色主题' : '切换到深色主题' }}</span>
-          </button>
-          <button class="sheet__item sheet__item--danger" type="button" @click="onLogout">
-            <AppIcon name="logout" :size="19" />
-            <span>退出登录</span>
-          </button>
-          <button class="sheet__cancel" type="button" @click="ui.closeMore()">取消</button>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
+  <!-- 个人信息上拉抽屉：自身 Teleport 到 body，这里只按需挂载。 -->
+  <ProfileSheet v-if="ui.profileDrawerOpen" />
 </template>
 
 <style scoped>
@@ -257,72 +149,5 @@ onUnmounted(() => {
   font-size: 10px;
   line-height: 16px;
   text-align: center;
-}
-
-.mask {
-  position: fixed;
-  inset: 0;
-  z-index: 200;
-  display: flex;
-  align-items: flex-end;
-  background: rgb(23 26 31 / 0.42);
-}
-.sheet {
-  width: 100%;
-  background: var(--app-panel);
-  border-radius: 12px 12px 0 0;
-  padding: 8px 8px calc(8px + var(--safe-bottom));
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.sheet__handle {
-  width: 36px;
-  height: 4px;
-  margin: 4px auto 8px;
-  border-radius: 2px;
-  background: var(--app-border);
-}
-.sheet__item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  /* 热区 >= 44px */
-  min-height: var(--spacing-touch-target);
-  padding: 10px 14px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--app-text);
-  font-size: 15px;
-  font-family: inherit;
-  text-align: left;
-  cursor: pointer;
-}
-.sheet__item:active {
-  background: var(--app-hover);
-}
-.sheet__item--danger {
-  color: var(--color-danger-500);
-}
-.sheet__cancel {
-  min-height: var(--spacing-touch-target);
-  margin-top: 4px;
-  border: none;
-  border-radius: 8px;
-  background: var(--app-panel-alt);
-  color: var(--app-text-muted);
-  font-size: 15px;
-  font-family: inherit;
-  cursor: pointer;
-}
-
-.sheet-enter-active,
-.sheet-leave-active {
-  transition: opacity 0.18s ease;
-}
-.sheet-enter-from,
-.sheet-leave-to {
-  opacity: 0;
 }
 </style>

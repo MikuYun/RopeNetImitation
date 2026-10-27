@@ -39,6 +39,21 @@ const router = createRouter({
           name: 'profile',
           component: () => import('@/views/ProfileView.vue'),
         },
+        // v2：广场（广场页是「内容屏」，与 MessagePane 同级）。
+        // 同样必须排在 ':convId' 之前，否则 /chat/square 会被当成一个会话 id。
+        {
+          path: 'square',
+          name: 'square',
+          component: () => import('@/views/SquareView.vue'),
+        },
+        // v2：访客资料页（点击他人头像进入）。:userId 是 UUID，
+        // 静态段在前、动态段在后，避免与 'square' / 'profile' 抢匹配。
+        {
+          path: 'user/:userId',
+          name: 'user-profile',
+          component: () => import('@/views/UserProfileView.vue'),
+          props: true,
+        },
         {
           path: 'admin',
           name: 'admin',

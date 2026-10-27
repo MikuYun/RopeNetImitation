@@ -174,54 +174,70 @@ test('附件消息：type 由服务端推导、历史与 sync 可见、不可复
   assert.equal(created.statusCode, 201, created.body);
   const uploadId = created.json().id;
 
-  // 只给 attachmentId、不给 content：content 落库为空串，type 由 kind 推导为 image。
+  // v2：发送附件用 attachmentIds 数组，且**必须带非空文字**（产品要求）。
   const sent = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: uploadId });
+    { clientMsgId: randomUUID(), content: '看这张图', attachmentIds: [uploadId] });
   assert.equal(sent.statusCode, 201, sent.body);
   const message = sent.json();
   assert.equal(message.type, 'image');
-  assert.equal(message.content, '');
-  assert.equal(message.attachment.id, uploadId);
-  assert.equal(message.attachment.mimeType, 'image/png');
-  assert.equal(message.attachment.kind, 'image');
-  assert.equal(message.attachment.url, `/api/v1/uploads/${uploadId}`);
+  assert.equal(message.content, '看这张图');
+  assert.equal(message.attachments.length, 1);
+  const attachment = message.attachments[0];
+  assert.equal(attachment.id, uploadId);
+  assert.equal(attachment.mimeType, 'image/png');
+  assert.equal(attachment.kind, 'image');
+  assert.equal(attachment.url, `/api/v1/uploads/${uploadId}`);
   // Attachment 不暴露 ownerId/sha256：历史消息反复回传哈希没有价值，还会放大载荷。
-  assert.deepEqual(Object.keys(message.attachment).sort(), ['createdAt', 'id', 'kind', 'mimeType', 'name', 'size', 'url']);
+  assert.deepEqual(Object.keys(attachment).sort(), ['createdAt', 'id', 'kind', 'mimeType', 'name', 'size', 'url']);
+  // 单数 attachment 字段已从契约删除，恒为 undefined（前端不再能误读）。
+  assert.equal(message.attachment, undefined);
+  assert.equal(message.recalled, false);
+  assert.equal(message.recalledAt, null);
+  assert.equal(message.replyTo, null);
 
-  // 同一 clientMsgId 重试：幂等返回同一条，且仍带 attachment。
+  // 有附件但没有文字 → 400，且文案固定（前端直接展示）。
+  const noText = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
+    { clientMsgId: randomUUID(), attachmentIds: [uploadId] });
+  assert.equal(noText.statusCode, 400, noText.body);
+  assert.equal(noText.json().error.code, 'VALIDATION_ERROR');
+  assert.equal(noText.json().error.message, '发送附件时必须附带文字');
+
+  // 同一 clientMsgId 重试：幂等返回同一条，且仍带 attachments。
   const retried = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: message.clientMsgId, attachmentId: uploadId });
+    { clientMsgId: message.clientMsgId, content: '看这张图', attachmentIds: [uploadId] });
   assert.equal(retried.statusCode, 200, retried.body);
   assert.equal(retried.json().msgId, message.msgId);
+  assert.equal(retried.json().attachments[0].id, uploadId);
 
   // 附件不可被第二条消息复用。
   const reused = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: uploadId });
+    { clientMsgId: randomUUID(), content: '复用', attachmentIds: [uploadId] });
   assert.equal(reused.statusCode, 409, reused.body);
   assert.equal(reused.json().error.code, 'UPLOAD_IN_USE');
 
-  // 历史与增量同步都必须带上 attachment。
+  // 历史与增量同步都必须带上 attachments 数组。
   const history = await call(backend, 'GET', `/api/v1/conversations/${conversationId}/messages`, bob.token);
   assert.equal(history.statusCode, 200, history.body);
   const historyMessage = history.json().items.find((item: { msgId: string }) => item.msgId === message.msgId);
   assert.ok(historyMessage, '历史里应能找到附件消息');
-  assert.equal(historyMessage.attachment.id, uploadId);
+  assert.equal(historyMessage.attachments[0].id, uploadId);
   const sync = await call(backend, 'POST', '/api/v1/sync', bob.token, { cursors: [{ conversationId, lastSeq: 0 }] });
   assert.equal(sync.statusCode, 200, sync.body);
   const synced = sync.json().items[0].messages.find((item: { msgId: string }) => item.msgId === message.msgId);
-  assert.equal(synced.attachment.id, uploadId);
+  assert.equal(synced.attachments[0].id, uploadId);
 
-  // 纯文本老客户端（带 type:'text'）与省略 type 都必须继续可用，attachment 恒为 null。
-  const legacy = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
+  // 纯文本消息：attachments 恒为空数组、type 恒为 text（不再接受客户端传 type）。
+  const text = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
+    { clientMsgId: randomUUID(), content: '纯文本' });
+  assert.equal(text.statusCode, 201, text.body);
+  assert.equal(text.json().type, 'text');
+  assert.deepEqual(text.json().attachments, []);
+  // 旧客户端的 type 字段现在是多余字段 → 400（契约 §0：请求体 additionalProperties:false）。
+  const legacyType = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
     { clientMsgId: randomUUID(), type: 'text', content: '老客户端' });
-  assert.equal(legacy.statusCode, 201, legacy.body);
-  assert.equal(legacy.json().attachment, null);
-  const noType = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), content: '不带 type' });
-  assert.equal(noType.statusCode, 201, noType.body);
-  assert.equal(noType.json().type, 'text');
+  assert.equal(legacyType.statusCode, 400, legacyType.body);
 
-  // 既无 content 又无 attachmentId → 400；空白 content 同样 400。
+  // 既无 content 又无附件 → 400；空白 content 同样 400。
   const neither = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
     { clientMsgId: randomUUID() });
   assert.equal(neither.statusCode, 400, neither.body);
@@ -234,11 +250,11 @@ test('附件消息：type 由服务端推导、历史与 sync 可见、不可复
   const bobUpload = await upload(backend, bob.token, PNG, { filename: 'bob.png' });
   assert.equal(bobUpload.statusCode, 201);
   const foreign = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: bobUpload.json().id });
+    { clientMsgId: randomUUID(), content: '别人的图', attachmentIds: [bobUpload.json().id] });
   assert.equal(foreign.statusCode, 400, foreign.body);
   assert.equal(foreign.json().error.code, 'INVALID_ATTACHMENT');
   const nonexistent = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: randomUUID() });
+    { clientMsgId: randomUUID(), content: '不存在的图', attachmentIds: [randomUUID()] });
   assert.equal(nonexistent.statusCode, 400, nonexistent.body);
   assert.equal(nonexistent.json().error.code, 'INVALID_ATTACHMENT');
 
@@ -310,7 +326,11 @@ test('迁移：user_version 1 → 最新重建 messages 表且不丢数据', asy
   assert.equal(Number((second.store.get<{ user_version: number }>('PRAGMA user_version')!).user_version), LATEST);
   const tableSql = second.store.get<{ sql: string }>("SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'")!.sql;
   assert.ok(tableSql.includes("'image'"), '升级后的 CHECK 必须包含 image/file');
-  assert.ok(tableSql.includes('attachment_id'), '升级后的表必须有 attachment_id 列');
+  // v4 把单附件列换成了 message_attachments 关联表：messages 不应再有 attachment_id。
+  assert.ok(!tableSql.includes('attachment_id'), 'v4 之后 messages 不应再有 attachment_id 列');
+  assert.ok(tableSql.includes('recalled_at'), 'v4 之后 messages 必须有 recalled_at 列');
+  assert.ok(tableSql.includes('reply_to_msg_id'), 'v4 之后 messages 必须有 reply_to_msg_id 列');
+  assert.ok(second.store.get("SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_attachments'"));
   const preserved = await call(second, 'GET', `/api/v1/conversations/${conversationId}/messages`, alice.token);
   assert.equal(preserved.statusCode, 200, preserved.body);
   assert.ok(preserved.json().items.some((item: { msgId: string }) => item.msgId === originalMsgId), '迁移不能丢消息');
@@ -318,7 +338,7 @@ test('迁移：user_version 1 → 最新重建 messages 表且不丢数据', asy
   const upgradeUpload = await upload(second, alice.token, PNG, { filename: '迁移后.png' });
   assert.equal(upgradeUpload.statusCode, 201, upgradeUpload.body);
   const attached = await call(second, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: upgradeUpload.json().id });
+    { clientMsgId: randomUUID(), content: '迁移后的图', attachmentIds: [upgradeUpload.json().id] });
   assert.equal(attached.statusCode, 201, attached.body);
   assert.equal(attached.json().type, 'image');
   // 再启动一次不会重复迁移（幂等）。
@@ -344,7 +364,7 @@ test('保留策略：sweep 只清理「无消息引用且已过期」的孤儿�
   assert.equal(orphan.statusCode, 201);
   assert.equal(referenced.statusCode, 201);
   const attached = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: referenced.json().id });
+    { clientMsgId: randomUUID(), content: '被引用的图', attachmentIds: [referenced.json().id] });
   assert.equal(attached.statusCode, 201, attached.body);
 
   // 只把两个上传记录做旧，消息保持新鲜 —— 这样 sweep 不会删消息，引用关系仍然成立。
@@ -361,15 +381,17 @@ test('保留策略：sweep 只清理「无消息引用且已过期」的孤儿�
   assert.equal((await call(backend, 'GET', `/api/v1/uploads/${referenced.json().id}`, alice.token)).statusCode, 200);
 });
 
-test('回归：全局 JSON bodyLimit 仍是 32KiB，未因上传被放大', async context => {
+test('回归：全局 JSON bodyLimit 仍是 64KiB，未因上传被放大', async context => {
   const { backend } = await fixture(context);
   const alice = await register(backend, 'alice');
-  // 上传作用域把 bodyLimit 提到 11 MiB，但其他接口必须保持 32KiB ——
+  // 上传作用域把 bodyLimit 提到 101 MiB（视频上限），但其他接口必须保持 64KiB ——
   // 否则任何接口都能被塞大 body，这是一个容易被顺手改坏的边界。
+  // 64KiB 是 v2 契约：广场正文 5000 字 + JSON 转义/多字节开销，32KiB 已经不够。
   const huge = await backend.app.inject({
     method: 'POST', url: '/api/v1/sync',
     headers: { authorization: `Bearer ${alice.token}`, 'content-type': 'application/json' },
-    payload: JSON.stringify({ cursors: [], padding: 'x'.repeat(40 * 1024) }),
+    payload: JSON.stringify({ cursors: [], padding: 'x'.repeat(80 * 1024) }),
   });
   assert.equal(huge.statusCode, 413, huge.body.slice(0, 200));
+  assert.equal(huge.json().error.code, 'UPLOAD_TOO_LARGE');
 });

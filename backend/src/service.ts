@@ -5,7 +5,8 @@ import type { Realtime } from './realtime.ts';
 import { fail } from './errors.ts';
 import { hashPassword } from './security.ts';
 import {
-  MAX_UPLOAD_BYTES, detectMimeType, kindFor, removeUploadFile, sanitizeFilename, uploadPath, writeUpload,
+  MAX_UPLOAD_BYTES, MAX_VIDEO_BYTES, detectMimeType, isVideo, kindFor, removeUploadFile, sanitizeFilename,
+  uploadPath, writeUpload,
 } from './upload.ts';
 
 interface UserRow {
@@ -58,9 +59,12 @@ interface MessageRow {
   conversation_id: string;
   sender_id: string;
   client_message_id: string;
-  type: 'text' | 'system' | 'image' | 'file';
+  type: 'text' | 'system' | 'image' | 'video' | 'file' | 'mixed';
   content: string;
-  attachment_id: string | null;
+  /** v2：撤回时间。非 NULL 即「已撤回」，此时 content 恒为空串、附件不再返回（见 message()）。 */
+  recalled_at: string | null;
+  /** v2：引用回复的原消息 id。原消息可能已被撤回或删除，故渲染时按存在性降级。 */
+  reply_to_msg_id: string | null;
   created_at: string;
 }
 
@@ -71,8 +75,64 @@ interface UploadRow {
   mime_type: string;
   size: number;
   sha256: string;
-  kind: 'image' | 'file';
+  kind: 'image' | 'video' | 'file';
   created_at: string;
+}
+
+interface PostRow {
+  id: string;
+  author_id: string;
+  content: string;
+  status: 'active' | 'deleted';
+  created_at: string;
+  updated_at: string;
+  like_count: number;
+  comment_count: number;
+}
+
+interface PostCommentRow {
+  id: string;
+  post_id: string;
+  author_id: string;
+  content: string;
+  reply_to_id: string | null;
+  status: 'active' | 'deleted';
+  created_at: string;
+  /** LEFT JOIN 出来的原评论作者昵称；只有 reply_to_id 非空且原评论还在时才有值。 */
+  reply_to_author_name?: string | null;
+}
+
+/** 附件对外视图（Attachment schema）。owner_id 与 sha256 不外泄。 */
+interface AttachmentView {
+  id: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  kind: 'image' | 'video' | 'file';
+  url: string;
+  createdAt: string;
+}
+
+/** 附件/上传的上限常量。上传大小上限按 kind 分档（契约 §1）。 */
+const ATTACHMENT_LIMIT = 9;
+const VIDEO_LIMIT = 1;
+/** 单条消息附件预览摘要的最大字符数（replyTo.preview 文本分支）。 */
+const PREVIEW_LENGTH = 60;
+/** 撤回时限：120 秒。 */
+const RECALL_WINDOW_MS = 120_000;
+/** 广场正文/评论字数上限（按 Unicode 码点计，见 Array.from）。 */
+const POST_CONTENT_LIMIT = 5000;
+const COMMENT_CONTENT_LIMIT = 1000;
+
+/**
+ * 判断上传记录属于视频（用于 be-api 层的附件分类统计）。
+ *
+ * 注意：真正的「是不是视频」判定必须用 upload.ts 的 `isVideo(mimeType)`，
+ * 依据是**服务端嗅探出的 mime**，不是客户端声明的 Content-Type 或扩展名。
+ * 这里只对已经落库的 kind 字段做分类，供 resolveAttachments 统计 video/image 数量。
+ */
+function isVideoKind(kind: string): boolean {
+  return kind === 'video';
 }
 
 interface RequestRow {
@@ -179,7 +239,7 @@ export class ChatService {
   }
 
   /** 附件对外视图：只暴露客户端渲染需要的字段，owner_id 与 sha256 不外泄。 */
-  private attachmentView(row: UploadRow) {
+  private attachmentView(row: UploadRow): AttachmentView {
     return {
       id: row.id, name: row.name, mimeType: row.mime_type, size: row.size, kind: row.kind,
       url: `/api/v1/uploads/${row.id}`, createdAt: row.created_at,
@@ -187,21 +247,90 @@ export class ChatService {
   }
 
   /**
-   * 按 attachment_id 取附件视图。
-   * 用 LEFT 语义（查不到降级为 null）而不是抛错：历史消息的附件可能已被 DELETE /uploads/:id 之外的路径清掉
-   * （例如运维手工清库），此时宁可让这条消息的 attachment 为 null，也不该让整个历史/同步请求 500。
+   * v2：一条消息的附件列表（按写入时的 position 升序，即用户选择的顺序）。
+   *
+   * 为什么不用 `WHERE uploads.id IN (...)` 一次性喂给 message()：
+   * 历史/同步接口一次要渲染 N 条消息，逐条查是 N+1；
+   * 但当前实现里 message() 的调用点最多 100 条（sync 上限），
+   * 而 message_attachments 有 (msg_id) 主键前缀索引，单条查是 O(k)（k ∈ [0,9]）。
+   * 权衡结果：先保证正确性与代码简单，量级问题留给后续按需 JOIN 优化。
    */
-  private attachment(uploadId: string | null) {
-    if (!uploadId) return null;
-    const row = this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', uploadId);
-    return row ? this.attachmentView(row) : null;
+  private attachmentsForMessage(msgId: string): AttachmentView[] {
+    const rows = this.store.all<UploadRow>(`SELECT upload.* FROM message_attachments link
+      JOIN uploads upload ON upload.id = link.attachment_id
+      WHERE link.msg_id = ? ORDER BY link.position`, msgId);
+    return rows.map(row => this.attachmentView(row));
   }
 
+  /** 广场帖子的附件列表，规则同 attachmentsForMessage（position 升序）。 */
+  private attachmentsForPost(postId: string): AttachmentView[] {
+    const rows = this.store.all<UploadRow>(`SELECT upload.* FROM post_attachments link
+      JOIN uploads upload ON upload.id = link.attachment_id
+      WHERE link.post_id = ? ORDER BY link.position`, postId);
+    return rows.map(row => this.attachmentView(row));
+  }
+
+  /**
+   * 引用回复的摘要（ReplyRef）。preview 规则见契约 §3：
+   * 纯文本取前 60 个字符（按 Unicode 码点切，避免把 emoji 劈成半个代理对）；
+   * 有附件时按**第一个**附件给占位符（图片 `[图片]`、视频 `[视频]`、文件 `[文件] 名称`）；
+   * 混合消息（图文）按第一个附件 —— 因为气泡里预览位只有一个。
+   *
+   * 原消息已被撤回/删除时返回 `[消息已撤回]`：引用气泡必须始终能渲染出内容，
+   * 否则前端得为「引用目标消失」单独写一条分支。
+   */
+  private replyPreview(row: MessageRow): string {
+    if (row.recalled_at !== null) return '[消息已撤回]';
+    const attachments = this.attachmentsForMessage(row.msg_id);
+    const first = attachments[0];
+    if (first) {
+      if (first.kind === 'image') return '[图片]';
+      if (first.kind === 'video') return '[视频]';
+      return `[文件] ${first.name}`;
+    }
+    // 兜底：content 为空且无附件（理论上不该出现）时给空串，不要让预览位显示 undefined。
+    if (row.content === '') return '';
+    // Array.from 而不是 slice：按码点切，中文/emoji 不会被截断。
+    const characters = Array.from(row.content);
+    return characters.length > PREVIEW_LENGTH ? characters.slice(0, PREVIEW_LENGTH).join('') : row.content;
+  }
+
+  /**
+   * 引用回复视图。原消息不存在（被 retention sweep 物理删除）→ 返回 null，
+   * 此时前端按「无引用」渲染，而不是显示一条指向空气的引用。
+   */
+  private replyRef(replyToMsgId: string | null) {
+    if (!replyToMsgId) return null;
+    const target = this.store.get<MessageRow>('SELECT * FROM messages WHERE msg_id = ?', replyToMsgId);
+    if (!target) return null;
+    // 发送者可能已被删除账号（DELETE /admin/users 会连带删消息，但极端时序下仍可能有悬空引用）。
+    // 这里用 LEFT 语义：查不到就退回 userId 作为名字，保证 ReplyRef 四个字段恒存在。
+    const sender = this.store.get<{ display_name: string }>('SELECT display_name FROM users WHERE id = ?', target.sender_id);
+    return {
+      msgId: target.msg_id,
+      senderId: target.sender_id,
+      senderName: sender?.display_name ?? '已注销用户',
+      preview: this.replyPreview(target),
+    };
+  }
+
+  /**
+   * 消息对外视图（v2 形状）。
+   *
+   * 撤回后**强制** content='' 且 attachments=[]：库里虽然也清了（recallMessage 会 DELETE 关联行），
+   * 但这里是契约的最终防线 —— 无论库里怎么脏，对外都不能把撤回内容泄出去。
+   */
   private message(row: MessageRow) {
+    const recalled = row.recalled_at !== null;
     return {
       msgId: row.msg_id, seq: row.seq, conversationId: row.conversation_id, senderId: row.sender_id,
-      clientMsgId: row.client_message_id, type: row.type, content: row.content,
-      attachment: this.attachment(row.attachment_id), createdAt: row.created_at,
+      clientMsgId: row.client_message_id, type: row.type,
+      content: recalled ? '' : row.content,
+      attachments: recalled ? [] : this.attachmentsForMessage(row.msg_id),
+      recalled,
+      recalledAt: row.recalled_at,
+      replyTo: this.replyRef(row.reply_to_msg_id),
+      createdAt: row.created_at,
     };
   }
 
@@ -419,10 +548,75 @@ export class ChatService {
   }
 
   /**
-   * 发送消息。attachmentId 为可选：给了附件时 type 由上传记录的 kind 推导（不信任客户端自报 type），
-   * 没给附件时走原文本路径，content 必须非空（由路由层 schema 保证）。
+   * v2 附件校验（消息与广场帖子共用，规则一致但允许的 kind 集合不同）。
+   *
+   * 一次 `IN (...)` 查全部，而不是逐个 get：数量本身要参与校验，
+   * 分开查既慢又无法区分「重复 id」与「不存在」（uniqueItems 在 schema 层拦了，但 service 也要兜底）。
+   *
+   * 三条硬规则（契约 §1/§2/§4）：
+   * 1. 全部必须存在且属主是操作者本人 —— 不存在与不属于自己合并成同一个 400，避免用错误码差异探测 uuid；
+   * 2. 图片 ≤9、视频 ≤1、合计 ≤9；
+   * 3. 广场额外禁止 file（chat 允许）。
+   *
+   * 返回值保持入参顺序（= 用户选择顺序），落库时用它当 position。
    */
-  sendMessage(conversationId: string, userId: string, clientMessageId: string, content: string | undefined, attachmentId?: string) {
+  private resolveAttachments(ownerId: string, attachmentIds: string[], allowed: 'chat' | 'post'): UploadRow[] {
+    if (attachmentIds.length === 0) return [];
+    if (attachmentIds.length > ATTACHMENT_LIMIT) {
+      return fail(400, 'ATTACHMENT_LIMIT', `附件数量不能超过 ${ATTACHMENT_LIMIT} 个`);
+    }
+    // 占位符按数量拼：SQLite 的 IN (?,?,?) 不能传数组，只能手工展开。
+    const placeholders = attachmentIds.map(() => '?').join(', ');
+    const rows = this.store.all<UploadRow>(`SELECT * FROM uploads WHERE id IN (${placeholders})`, ...attachmentIds);
+    // 数量不符 = 至少有一个 id 不存在。归一到同一个错误文案，不告诉客户端「哪个不存在」。
+    if (rows.length !== attachmentIds.length) return fail(400, 'INVALID_ATTACHMENT', '附件不存在或不属于你');
+    const byId = new Map(rows.map(row => [row.id, row]));
+    const ordered = attachmentIds.map(id => byId.get(id)!);
+    for (const row of ordered) {
+      if (row.owner_id !== ownerId) return fail(400, 'INVALID_ATTACHMENT', '附件不存在或不属于你');
+    }
+    const videoCount = ordered.filter(row => row.kind === 'video').length;
+    const imageCount = ordered.filter(row => row.kind === 'image').length;
+    if (videoCount > VIDEO_LIMIT) return fail(400, 'ATTACHMENT_LIMIT', `视频最多 ${VIDEO_LIMIT} 个`);
+    if (imageCount > ATTACHMENT_LIMIT) return fail(400, 'ATTACHMENT_LIMIT', `图片最多 ${ATTACHMENT_LIMIT} 张`);
+    // allowed='post' 时 file 占用配额但也直接拒绝：广场只支持图片与视频这两种可预览形态。
+    if (allowed === 'post' && ordered.some(row => row.kind === 'file')) {
+      return fail(400, 'ATTACHMENT_LIMIT', '广场不支持通用文件附件');
+    }
+    return ordered;
+  }
+
+  /**
+   * 一附件只能用在一处（消息或广场帖子）。必须在事务内调用：
+   * 查完到插入之间若有并发，靠 BEGIN IMMEDIATE 的写锁串行化保证不会双绑。
+   */
+  private assertAttachmentUnused(attachmentId: string): void {
+    const usedByMessage = this.store.get('SELECT 1 FROM message_attachments WHERE attachment_id = ?', attachmentId);
+    if (usedByMessage) return fail(409, 'UPLOAD_IN_USE', '该附件已被其他消息使用');
+    const usedByPost = this.store.get('SELECT 1 FROM post_attachments WHERE attachment_id = ?', attachmentId);
+    if (usedByPost) return fail(409, 'UPLOAD_IN_USE', '该附件已被其他内容使用');
+  }
+
+  /** 由附件组成推导消息 type（契约 §2）。混合 = 至少两种 kind。 */
+  private messageTypeOf(attachments: UploadRow[]): 'text' | 'image' | 'video' | 'file' | 'mixed' {
+    if (attachments.length === 0) return 'text';
+    const kinds = new Set(attachments.map(row => row.kind));
+    if (kinds.size > 1) return 'mixed';
+    const only = attachments[0]!.kind;
+    return only === 'image' ? 'image' : only === 'video' ? 'video' : 'file';
+  }
+
+  /**
+   * 发送消息（v2）。
+   *
+   * 与 v1 的差异：
+   * - 附件从单个 attachmentId 变成 attachmentIds 数组（≤9，可图文混排）；
+   * - content 规则反转：**带附件时必须附带文字**（v1 是允许空 content）；
+   * - 支持 replyToMsgId 引用回复；
+   * - 幂等比较覆盖附件集合与引用目标（v1 只比单个 attachment）。
+   */
+  sendMessage(conversationId: string, userId: string, clientMessageId: string, content: string | undefined,
+    attachmentIds: string[] = [], replyToMsgId: string | null = null) {
     this.requireMember(conversationId, userId);
     // 禁言只拦「发消息」，读历史、已读、加好友都不受影响（契约 §5.3）。
     // 判定放在 requireMember 之后：非成员应先看到 404，不该从 403 MUTED 反推会话存在与否。
@@ -433,35 +627,60 @@ export class ChatService {
     // 账号被禁用后 token 可能仍未过期（管理员封禁与踢线之间有时间差），发消息也要挡住，
     // 否则被禁用的账号还能在已登录的会话里继续发言。
     if (sender.status === 'banned') return fail(403, 'ACCOUNT_BANNED', '账号已被禁用，请联系管理员');
-    const upload = attachmentId === undefined ? undefined : this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', attachmentId);
-    // 不存在与不属于自己合并成同一个 400：避免用错误码差异探测「某个 uuid 的上传是否存在」。
-    if (attachmentId !== undefined && (!upload || upload.owner_id !== userId)) {
-      return fail(400, 'INVALID_ATTACHMENT', '附件不存在或不属于你');
+    const attachments = this.resolveAttachments(userId, attachmentIds, 'chat');
+    const normalizedContent = (content ?? '').trim();
+    // 契约 §2 硬规则：带附件时**必须**有文字。否则一条只有图片没有上下文的消息无法在列表/通知里被摘要。
+    if (attachments.length > 0 && normalizedContent === '') {
+      return fail(400, 'VALIDATION_ERROR', '发送附件时必须附带文字');
     }
-    // 带附件时 content 允许省略（落库为空串，客户端靠 attachment 渲染）；纯文本必须非空，由路由 schema 兜住。
-    const normalizedContent = content ?? '';
-    if (!upload && normalizedContent.trim() === '') return fail(400, 'VALIDATION_ERROR', '消息内容不能为空');
-    const type = upload ? kindFor(upload.mime_type) : 'text' as const;
-    const existing = this.store.get<MessageRow>('SELECT * FROM messages WHERE sender_id = ? AND client_message_id = ?', userId, clientMessageId);
+    if (attachments.length === 0 && normalizedContent === '') {
+      return fail(400, 'VALIDATION_ERROR', '消息内容不能为空');
+    }
+    // 4000 字上限：schema 已按 UTF-16 长度拦过一次，这里按码点再兜一次（与广场保持一致口径）。
+    if (Array.from(normalizedContent).length > 4000) {
+      return fail(400, 'VALIDATION_ERROR', '消息内容不能超过 4000 字');
+    }
+    // 引用目标必须存在且属于同一会话。不存在与跨会话合并成同一个错误：
+    // 用不同错误码会让 msgId 变成「该消息是否存在于别的会话」的探测器。
+    if (replyToMsgId !== null) {
+      const target = this.store.get<MessageRow>('SELECT * FROM messages WHERE msg_id = ?', replyToMsgId);
+      if (!target || target.conversation_id !== conversationId) {
+        return fail(400, 'VALIDATION_ERROR', '引用的消息不存在');
+      }
+    }
+    const type = this.messageTypeOf(attachments);
+    // 幂等：同一 (sender, clientMessageId) 只允许一条消息。命中后必须逐项比对语义是否一致，
+    // 否则「客户端重试」和「客户端 bug 复用 id」会被当成同一件事静默混过去。
+    const existing = this.store.get<MessageRow>('SELECT * FROM messages WHERE sender_id = ? AND client_message_id = ?',
+      userId, clientMessageId);
     if (existing) {
+      const existingAttachments = this.store.all<{ attachment_id: string }>(
+        'SELECT attachment_id FROM message_attachments WHERE msg_id = ? ORDER BY position', existing.msg_id)
+        .map(row => row.attachment_id);
+      // 集合比较而不是数组比较：同一组附件换顺序仍是同一条消息（幂等重试不该报冲突）。
+      const sameAttachments = existingAttachments.length === attachmentIds.length
+        && new Set(existingAttachments).size === new Set(attachmentIds).size
+        && attachmentIds.every(id => existingAttachments.includes(id));
       if (existing.conversation_id !== conversationId || existing.content !== normalizedContent
-        || (existing.attachment_id ?? undefined) !== (upload?.id)) {
+        || !sameAttachments || (existing.reply_to_msg_id ?? null) !== replyToMsgId) {
         return fail(409, 'IDEMPOTENCY_CONFLICT', '同一 clientMsgId 不可用于不同消息');
       }
       return { message: this.message(existing), created: false };
     }
-    // 附件一旦被消息引用就不能再被第二条消息复用：否则删消息语义、去重语义都会含糊。
-    // 放在事务内查，失败时整个事务回滚，不会留下半条消息。
+    // 事务内完成「占用检查 + 插消息 + 插关联」：任一步失败整体回滚，不会留下半条消息或半个关联。
     const row = this.store.transaction(() => {
-      if (upload) {
-        const used = this.store.get('SELECT 1 FROM messages WHERE attachment_id = ?', upload.id);
-        if (used) fail(409, 'UPLOAD_IN_USE', '该附件已被其他消息使用');
-      }
+      for (const attachment of attachments) this.assertAttachmentUnused(attachment.id);
       const now = new Date().toISOString();
       const next = this.store.get<{ seq: number }>('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE conversation_id = ?', conversationId)!;
-      const inserted = this.store.run(`INSERT INTO messages(msg_id, seq, conversation_id, sender_id, client_message_id, type, content, attachment_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, randomUUID(), next.seq, conversationId, userId, clientMessageId, type,
-      normalizedContent, upload?.id ?? null, now);
+      const msgId = randomUUID();
+      const inserted = this.store.run(`INSERT INTO messages(msg_id, seq, conversation_id, sender_id, client_message_id,
+        type, content, reply_to_msg_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      msgId, next.seq, conversationId, userId, clientMessageId, type, normalizedContent, replyToMsgId, now);
+      // position 就是用户选择顺序：前端渲染九宫格时依赖它，不能靠 attachment id 排序。
+      attachments.forEach((attachment, position) => {
+        this.store.run('INSERT INTO message_attachments(msg_id, attachment_id, position) VALUES (?, ?, ?)',
+          msgId, attachment.id, position);
+      });
       this.store.run('UPDATE conversations SET updated_at = ? WHERE id = ?', now, conversationId);
       return this.store.get<MessageRow>('SELECT * FROM messages WHERE id = ?', inserted.lastInsertRowid)!;
     });
@@ -474,50 +693,122 @@ export class ChatService {
     return { message, created: true };
   }
 
-  /** 落盘 + 入库。先写文件再插库：写文件失败时不会留下指向空文件的记录。 */
+  /**
+   * 撤回消息（v2）。只有发送者本人、且发出后 120 秒内可以撤回。
+   *
+   * 为什么撤回要**物理清空** content 与附件关联而不是只打标记：
+   * 契约 §3 要求撤回后任何读取路径（历史/同步/置顶）都拿不到原文，
+   * 只在 message() 里打码的话，库里的原文仍会随备份/导出泄漏。
+   * 附件关联删除后附件本身仍留在 uploads 表（可被重新使用），这是有意的：
+   * 撤回一条消息不该连带删掉用户刚上传的视频。
+   */
+  recallMessage(conversationId: string, userId: string, msgId: string) {
+    this.requireMember(conversationId, userId);
+    const row = this.store.get<MessageRow>('SELECT * FROM messages WHERE msg_id = ? AND conversation_id = ?',
+      msgId, conversationId);
+    // 「不存在」与「属于别的会话」合并成 404：msgId 不该成为跨会话的探测凭据。
+    if (!row) return fail(404, 'NOT_FOUND', '消息不存在');
+    if (row.sender_id !== userId) return fail(403, 'FORBIDDEN', '只能撤回自己的消息');
+    // 幂等：已经撤回过就直接返回当前状态，不报错也不重复广播。
+    if (row.recalled_at !== null) return this.message(row);
+    if (Date.now() - Date.parse(row.created_at) > RECALL_WINDOW_MS) {
+      return fail(403, 'RECALL_WINDOW_EXPIRED', '超过撤回时限');
+    }
+    const now = new Date().toISOString();
+    this.store.transaction(() => {
+      this.store.run('UPDATE messages SET recalled_at = ?, content = ? WHERE msg_id = ?', now, '', msgId);
+      // 删除关联而不是保留：撤回后附件必须释放，允许同一附件在别处重新使用（契约 §2）。
+      this.store.run('DELETE FROM message_attachments WHERE msg_id = ?', msgId);
+    });
+    const message = this.message(this.store.get<MessageRow>('SELECT * FROM messages WHERE msg_id = ?', msgId)!);
+    // 广播给全体成员（含发送者自己）：「所有客户端」都要立刻把气泡替换成撤回态，
+    // 只发给对方会让发送者本地状态与服务器不一致。
+    for (const recipientId of this.members(conversationId)) {
+      this.realtime.publish([recipientId], 'message.updated', { message });
+    }
+    return message;
+  }
+
+  /**
+   * 落盘 + 入库。先写文件再插库：写文件失败时不会留下指向空文件的记录。
+   *
+   * v2：上传大小上限按 kind 分档（契约 §1）——图片/文件 10 MiB，视频 100 MiB。
+   * kind 由服务端嗅探出的 mimeType 决定，不信任客户端的 Content-Type / 扩展名。
+   */
   createUpload(ownerId: string, filename: string | undefined, bytes: Buffer) {
     if (bytes.length === 0) return fail(400, 'VALIDATION_ERROR', '上传内容不能为空');
-    if (bytes.length > MAX_UPLOAD_BYTES) return fail(413, 'UPLOAD_TOO_LARGE', `单个文件不能超过 ${MAX_UPLOAD_BYTES} 字节`);
     const mimeType = detectMimeType(bytes);
     if (!mimeType) return fail(415, 'UNSUPPORTED_MEDIA_TYPE', '不支持的文件类型');
+    const kind = kindFor(mimeType);
+    // 先按 kind 选上限再判超限：视频 100 MiB，其余仍是 10 MiB。
+    // 用 isVideo(mimeType) 而不是 kind === 'video'：前者是 mime 前缀判定，与 upload.ts 内部分档同源。
+    const limit = isVideo(mimeType) ? MAX_VIDEO_BYTES : MAX_UPLOAD_BYTES;
+    if (bytes.length > limit) {
+      return fail(413, 'UPLOAD_TOO_LARGE', `单个文件不能超过 ${limit} 字节`);
+    }
     const id = randomUUID();
     const { sha256, size } = writeUpload(this.uploadsDir, id, mimeType, bytes);
     const name = sanitizeFilename(filename);
     const createdAt = new Date().toISOString();
     try {
       this.store.run(`INSERT INTO uploads(id, owner_id, name, mime_type, size, sha256, kind, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerId, name, mimeType, size, sha256, kindFor(mimeType), createdAt);
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, id, ownerId, name, mimeType, size, sha256, kind, createdAt);
     } catch (error) {
       // 插库失败（磁盘满/约束冲突）时把刚落盘的字节清掉，避免产生永远查不到的孤儿文件。
       removeUploadFile(this.uploadsDir, id, mimeType);
       throw error;
     }
-    return { id, name, mimeType, size, sha256, kind: kindFor(mimeType), url: `/api/v1/uploads/${id}`, createdAt };
+    return { id, name, mimeType, size, sha256, kind, url: `/api/v1/uploads/${id}`, createdAt };
   }
 
   /**
-   * 读上传（契约 §八，P0 修复）。
+   * 读上传（契约 §1 的读取授权，v2 扩到四档）。
    *
-   * 旧实现只允许属主读取，导致「对方发来的图片/文件点开就 403」。新规则三档：
    * 1. 属主本人 → 允许；
-   * 2. 该附件被某条消息引用，且请求者是那条消息所在会话的成员 → 允许（这是聊天场景的常态）；
-   * 3. 其余 → 403。
+   * 2. 该附件被某条消息引用，且请求者是那条消息所在会话的成员 → 允许（聊天常态）；
+   * 3. 该附件被某个**未删除**的广场帖子引用 → 任意登录用户允许
+   *    （广场是公开内容，若还要求「作者本人」那广场图片对所有人都是破图）；
+   *    status='deleted' 的帖子不再放行，否则软删后图片仍可被猜到 uuid 的人读取；
+   * 4. 该附件被用作某个用户头像或群头像 → 任意登录用户允许
+   *    （头像会出现在好友列表、群成员、搜索等所有地方，本来就无法限定为「同会话可见」）。
    *
    * 为什么第 2 档要「先看消息引用再看会话成员」而不是直接按 owner 放行：
-   * 附件本身没有会话归属，同一张图可以被转发到多个会话，只有顺着 messages 反查才能知道
-   * 「这个请求者是否有权看到这张图」。未被任何消息引用的上传（刚传完还没发出去）不能跨人访问，
+   * 附件本身没有会话归属，同一张图可以被转发到多个会话，只有顺着 message_attachments 反查才能知道
+   * 「这个请求者是否有权看到这张图」。未被任何内容引用的上传（刚传完还没发出去）不能跨人访问，
    * 否则任何拿到 UUID 的人都能读别人正在编辑的草稿附件。
    */
+  /**
+   * 非属主的读取授权判定（契约 §1 的 ②③④ 三档）。
+   * 抽成独立方法是因为 readUpload 与 deleteUpload 的语义不同（后者只看属主），
+   * 而这里的三条 SQL 各自独立、任一命中即放行 —— 用 `||` 的短路顺序按「命中率从高到低」排：
+   * 消息引用最常见，广场帖子次之，头像最少。
+   */
+  private canReadAttachment(uploadId: string, userId: string): boolean {
+    // ② 被某条消息引用，且请求者是那条消息所在会话的成员。
+    const viaMessage = this.store.get(`SELECT 1 FROM message_attachments link
+      JOIN messages message ON message.msg_id = link.msg_id
+      JOIN conversation_members member ON member.conversation_id = message.conversation_id
+      WHERE link.attachment_id = ? AND member.user_id = ?`, uploadId, userId);
+    if (viaMessage) return true;
+    // ③ 被某个未删除的广场帖子引用 → 任意登录用户可读。
+    const viaPost = this.store.get(`SELECT 1 FROM post_attachments link
+      JOIN posts post ON post.id = link.post_id
+      WHERE link.attachment_id = ? AND post.status = 'active'`, uploadId);
+    if (viaPost) return true;
+    // ④ 被用作头像（用户或群）。两种头像的存储格式都是 '/api/v1/uploads/<id>'，
+    // 所以这里按这个前缀拼出被引用的字符串再精确匹配，不做 LIKE（避免 uuid 前缀被误判）。
+    const reference = `/api/v1/uploads/${uploadId}`;
+    const asAvatar = this.store.get(`SELECT 1 FROM users WHERE avatar_url = ?
+      UNION ALL SELECT 1 FROM conversations WHERE avatar_url = ?`, reference, reference);
+    return Boolean(asAvatar);
+  }
+
   readUpload(uploadId: string, userId: string) {
     const row = this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', uploadId);
     if (!row) return fail(404, 'UPLOAD_NOT_FOUND', '文件不存在');
-    if (row.owner_id !== userId) {
-      // 一次 JOIN 同时回答两个问题：附件有没有被引用、请求者是不是那个会话的成员。
-      const shared = this.store.get(`SELECT 1 FROM messages message
-        JOIN conversation_members member ON member.conversation_id = message.conversation_id
-        WHERE message.attachment_id = ? AND member.user_id = ?`, uploadId, userId);
-      // 保持 403 FORBIDDEN（契约 §八 明确要求沿用原码）：uuid 不可枚举，403 让前端区分「无权限」与「已删除」。
-      if (!shared) return fail(403, 'FORBIDDEN', '无权访问该文件');
+    if (row.owner_id !== userId && !this.canReadAttachment(uploadId, userId)) {
+      // 保持 403 FORBIDDEN（契约 §1 明确要求沿用原码）：uuid 不可枚举，403 让前端区分「无权限」与「已删除」。
+      return fail(403, 'FORBIDDEN', '无权访问该文件');
     }
     let bytes: Buffer;
     try {
@@ -533,9 +824,10 @@ export class ChatService {
     const row = this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', uploadId);
     if (!row) return fail(404, 'UPLOAD_NOT_FOUND', '文件不存在');
     if (row.owner_id !== userId) return fail(403, 'FORBIDDEN', '无权访问该文件');
-    if (this.store.get('SELECT 1 FROM messages WHERE attachment_id = ?', uploadId)) {
-      return fail(409, 'UPLOAD_IN_USE', '该附件已被消息引用，不能删除');
-    }
+    // v2：一处引用即不可删。消息与广场帖子两条关联表都要查（v1 只看 messages）。
+    const inUse = this.store.get('SELECT 1 FROM message_attachments WHERE attachment_id = ?', uploadId)
+      ?? this.store.get('SELECT 1 FROM post_attachments WHERE attachment_id = ?', uploadId);
+    if (inUse) return fail(409, 'UPLOAD_IN_USE', '该附件已被消息引用，不能删除');
     // 先删库再删文件：反过来的话，删文件成功而删库失败会留下指向空文件的记录（不可读、不可删）。
     // 这里反之只会留下一个孤儿文件，由 retention sweep 兜底清理。
     this.store.run('DELETE FROM uploads WHERE id = ?', uploadId);
@@ -729,6 +1021,317 @@ export class ChatService {
   }
 
   // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // 访客资料（v2 契约 §2）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 陌生人可访问的用户资料 + 与当前查看者的关系。
+   *
+   * 为什么 relationship 要由后端判定而不是前端自己拼：
+   * 好友关系是双写的（accept 时插两行），但「待处理申请」有方向性 ——
+   * 同一条 pending 记录，发送者看到的是「已申请」，接收者看到的是「待处理」。
+   * 让前端去查两张表并判断方向，等于把权限/状态机逻辑复制一份到客户端。
+   *
+   * 返回值里的 user 必须走 this.user()：它只映射白名单字段，
+   * 直接把 UserRow 透传会把 password_hash 一起序列化出去。
+   */
+  getUserProfile(viewerId: string, targetId: string) {
+    const row = this.store.get<UserRow>('SELECT * FROM users WHERE id = ?', targetId);
+    if (!row) return fail(404, 'NOT_FOUND', '用户不存在');
+    let relationship: 'none' | 'friend' | 'request_sent' | 'request_received' | 'self' = 'none';
+    if (viewerId === targetId) {
+      relationship = 'self';
+    } else if (this.store.get('SELECT 1 FROM friendships WHERE user_id = ? AND friend_id = ?', viewerId, targetId)) {
+      relationship = 'friend';
+    } else {
+      // 只查 pending：accepted/rejected 的历史申请不该影响当前关系展示。
+      // 一条 SQL 同时问两个方向，靠 sender 是否等于 viewer 区分语义。
+      const pending = this.store.get<{ sender_id: string }>(`SELECT sender_id FROM friend_requests
+        WHERE status = 'pending' AND ((sender_id = ? AND recipient_id = ?) OR (sender_id = ? AND recipient_id = ?))`,
+      viewerId, targetId, targetId, viewerId);
+      if (pending) relationship = pending.sender_id === viewerId ? 'request_sent' : 'request_received';
+    }
+    // 单聊会话用 direct_key 精确定位（排序后 a:b 拼接，见 direct()）。
+    // 不复用 direct() 是因为它会「不存在就建」，而这里只是查看资料，不能有写副作用。
+    const key = [viewerId, targetId].sort().join(':');
+    const conversation = viewerId === targetId
+      ? undefined
+      : this.store.get<{ id: string }>('SELECT id FROM conversations WHERE direct_key = ?', key);
+    const postCount = this.store.get<{ count: number }>(
+      "SELECT COUNT(*) AS count FROM posts WHERE author_id = ? AND status = 'active'", targetId)!.count;
+    // friendships 是双写表，单边 COUNT 就是完整好友数（不该 UNION 另一列，会重复计数）。
+    const friendCount = this.store.get<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM friendships WHERE user_id = ?', targetId)!.count;
+    return {
+      user: this.user(targetId), relationship, conversationId: conversation?.id ?? null, postCount, friendCount,
+    };
+  }
+
+  // ---------------------------------------------------------------------------
+  // 广场（v2 契约 §4）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 不透明游标：`base64url(JSON({t, id}))`。
+   *
+   * 为什么不用裸 offset：广场按 created_at DESC 且新帖不断插入，
+   * offset 分页在翻页期间会重复/漏掉条目。键集分页（keyset）用「上一页最后一行的排序键」，
+   * 对 (created_at, id) 做严格小于即可稳定续页 —— id 参与比较是为了给同毫秒的帖子一个确定的次序。
+   *
+   * 编码成 base64url 有两个目的：① 让客户端无法手工构造（实现可自由改内部结构）；
+   * ② 避免 `|` 之类的分隔符在 URL 里需要转义。
+   */
+  private static encodeCursor(createdAt: string, id: string): string {
+    return Buffer.from(JSON.stringify({ t: createdAt, id }), 'utf8').toString('base64url');
+  }
+
+  private static decodeCursor(cursor: string | undefined): { t: string; id: string } | null {
+    if (cursor === undefined || cursor === '') return null;
+    try {
+      const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { t?: unknown; id?: unknown };
+      // 结构校验：非法游标一律 400，而不是静默当成「第一页」—— 后者会让前端无限翻页回到开头。
+      if (typeof parsed.t !== 'string' || typeof parsed.id !== 'string') return null;
+      return { t: parsed.t, id: parsed.id };
+    } catch {
+      return null;
+    }
+  }
+
+  /** 帖子对外视图。likedByMe/mine 由 viewerId 决定，author 复用 User 形状。 */
+  private post(row: PostRow, viewerId: string) {
+    return {
+      id: row.id,
+      author: this.user(row.author_id),
+      content: row.content,
+      attachments: this.attachmentsForPost(row.id),
+      likeCount: row.like_count,
+      commentCount: row.comment_count,
+      likedByMe: Boolean(this.store.get('SELECT 1 FROM post_likes WHERE post_id = ? AND user_id = ?', row.id, viewerId)),
+      mine: row.author_id === viewerId,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /**
+   * 广场列表（created_at DESC）。cursor 非法 → 400 INVALID_CURSOR：
+   * 静默降级会让客户端以为自己翻到了第一页，表现为「列表突然跳回顶部」。
+   */
+  listPosts(viewerId: string, cursor: string | undefined, limit: number) {
+    const position = ChatService.decodeCursor(cursor);
+    if (cursor !== undefined && cursor !== '' && position === null) {
+      return fail(400, 'INVALID_CURSOR', '分页游标无效');
+    }
+    const rows = position === null
+      ? this.store.all<PostRow>(`SELECT * FROM posts WHERE status = 'active'
+          ORDER BY created_at DESC, id DESC LIMIT ?`, limit + 1)
+      // (created_at, id) 复合比较：时间相同的帖子靠 id 决定先后，保证分页不重不漏。
+      : this.store.all<PostRow>(`SELECT * FROM posts WHERE status = 'active'
+          AND (created_at < ? OR (created_at = ? AND id < ?))
+          ORDER BY created_at DESC, id DESC LIMIT ?`, position.t, position.t, position.id, limit + 1);
+    const items = rows.slice(0, limit);
+    const last = items.at(-1);
+    return {
+      items: items.map(row => this.post(row, viewerId)),
+      nextCursor: rows.length > limit && last ? ChatService.encodeCursor(last.created_at, last.id) : null,
+    };
+  }
+
+  getPost(viewerId: string, postId: string) {
+    const row = this.store.get<PostRow>("SELECT * FROM posts WHERE id = ? AND status = 'active'", postId);
+    // 已软删与不存在统一 404：软删的帖子不该还能通过 id 探测到「曾经存在」。
+    if (!row) return fail(404, 'NOT_FOUND', '帖子不存在');
+    return this.post(row, viewerId);
+  }
+
+  /** 某人的广场帖子（访客资料页用），分页与可见性规则同 listPosts。 */
+  listUserPosts(viewerId: string, authorId: string, cursor: string | undefined, limit: number) {
+    const row = this.store.get<UserRow>('SELECT * FROM users WHERE id = ?', authorId);
+    if (!row) return fail(404, 'NOT_FOUND', '用户不存在');
+    const position = ChatService.decodeCursor(cursor);
+    if (cursor !== undefined && cursor !== '' && position === null) {
+      return fail(400, 'INVALID_CURSOR', '分页游标无效');
+    }
+    const rows = position === null
+      ? this.store.all<PostRow>(`SELECT * FROM posts WHERE status = 'active' AND author_id = ?
+          ORDER BY created_at DESC, id DESC LIMIT ?`, authorId, limit + 1)
+      : this.store.all<PostRow>(`SELECT * FROM posts WHERE status = 'active' AND author_id = ?
+          AND (created_at < ? OR (created_at = ? AND id < ?))
+          ORDER BY created_at DESC, id DESC LIMIT ?`, authorId, position.t, position.t, position.id, limit + 1);
+    const items = rows.slice(0, limit);
+    const last = items.at(-1);
+    return {
+      items: items.map(item => this.post(item, viewerId)),
+      nextCursor: rows.length > limit && last ? ChatService.encodeCursor(last.created_at, last.id) : null,
+    };
+  }
+
+  /**
+   * 发帖。契约 §4：`content.trim()` 非空**或**至少一个附件，两者都空 → 400。
+   * 附件额外禁止 file（广场只展示图片与视频）。
+   */
+  createPost(authorId: string, content: string | undefined, attachmentIds: string[] = []) {
+    const normalized = (content ?? '').trim();
+    const attachments = this.resolveAttachments(authorId, attachmentIds, 'post');
+    if (normalized === '' && attachments.length === 0) {
+      return fail(400, 'VALIDATION_ERROR', '帖子内容不能为空');
+    }
+    // 按码点计字数：中文/emoji 都算 1 个字，与前端输入框的计数口径一致。
+    if (Array.from(normalized).length > POST_CONTENT_LIMIT) {
+      return fail(400, 'VALIDATION_ERROR', `帖子内容不能超过 ${POST_CONTENT_LIMIT} 字`);
+    }
+    const postId = randomUUID();
+    const now = new Date().toISOString();
+    const row = this.store.transaction(() => {
+      for (const attachment of attachments) this.assertAttachmentUnused(attachment.id);
+      this.store.run(`INSERT INTO posts(id, author_id, content, status, created_at, updated_at, like_count, comment_count)
+        VALUES (?, ?, ?, 'active', ?, ?, 0, 0)`, postId, authorId, normalized, now, now);
+      attachments.forEach((attachment, position) => {
+        this.store.run('INSERT INTO post_attachments(post_id, attachment_id, position) VALUES (?, ?, ?)',
+          postId, attachment.id, position);
+      });
+      return this.store.get<PostRow>('SELECT * FROM posts WHERE id = ?', postId)!;
+    });
+    // 广场事件发给所有在线用户，载荷只带 {postId, actorId}：完整 Post 含作者与附件数组，
+    // 在线用户多时同一条事件会按人数放大带宽（见 realtime.broadcastAll 注释）。
+    this.realtime.broadcastAll('post.created', { postId, actorId: authorId });
+    return this.post(row, authorId);
+  }
+
+  deletePost(viewerId: string, postId: string, isAdmin: boolean) {
+    const row = this.store.get<PostRow>("SELECT * FROM posts WHERE id = ? AND status = 'active'", postId);
+    if (!row) return fail(404, 'NOT_FOUND', '帖子不存在');
+    if (row.author_id !== viewerId && !isAdmin) return fail(403, 'FORBIDDEN', '只能删除自己的帖子');
+    const now = new Date().toISOString();
+    // 软删：保留行以便审计与「评论数最终一致」，列表/详情靠 status 过滤。
+    this.store.run("UPDATE posts SET status = 'deleted', updated_at = ? WHERE id = ?", now, postId);
+    this.realtime.broadcastAll('post.deleted', { postId, actorId: viewerId });
+    return { ok: true as const };
+  }
+
+  /**
+   * 点赞 / 取消点赞。
+   *
+   * like_count 用「重算」而不是 `like_count + 1`：后者在并发下（两个事务各读到旧值）
+   * 或异常路径（插入被 IGNORE 但仍自增）会永久漂移，且漂移无法自愈。
+   * 重算是一次 COUNT，代价可忽略，换来的是计数永远等于真实行数。
+   */
+  private setPostLike(viewerId: string, postId: string, liked: boolean) {
+    const row = this.store.get<PostRow>("SELECT * FROM posts WHERE id = ? AND status = 'active'", postId);
+    if (!row) return fail(404, 'NOT_FOUND', '帖子不存在');
+    const likeCount = this.store.transaction(() => {
+      if (liked) {
+        // INSERT OR IGNORE 让重复点赞幂等（前端连点不应报错）。
+        this.store.run('INSERT OR IGNORE INTO post_likes(post_id, user_id, created_at) VALUES (?, ?, ?)',
+          postId, viewerId, new Date().toISOString());
+      } else {
+        this.store.run('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?', postId, viewerId);
+      }
+      this.store.run('UPDATE posts SET like_count = (SELECT COUNT(*) FROM post_likes WHERE post_id = ?) WHERE id = ?',
+        postId, postId);
+      return this.store.get<{ like_count: number }>('SELECT like_count FROM posts WHERE id = ?', postId)!.like_count;
+    });
+    this.realtime.broadcastAll('post.liked', { postId, actorId: viewerId });
+    return { liked, likeCount };
+  }
+
+  likePost(viewerId: string, postId: string) {
+    return this.setPostLike(viewerId, postId, true);
+  }
+
+  unlikePost(viewerId: string, postId: string) {
+    return this.setPostLike(viewerId, postId, false);
+  }
+
+  /** 评论视图。replyToAuthorName 由 SQL 的 LEFT JOIN 直接带出，避免 N+1。 */
+  private postComment(row: PostCommentRow) {
+    return {
+      id: row.id, postId: row.post_id, author: this.user(row.author_id), content: row.content,
+      replyToId: row.reply_to_id, replyToAuthorName: row.reply_to_author_name ?? null, createdAt: row.created_at,
+    };
+  }
+
+  /**
+   * 评论列表（created_at ASC，即从旧到新）。分页同样用 (created_at, id) 键集，
+   * 但方向相反：续页条件是「大于上一页最后一行」。
+   * 排序键里 id 用升序，与 created_at ASC 保持一致，否则同毫秒评论会乱序。
+   */
+  listPostComments(postId: string, cursor: string | undefined, limit: number) {
+    const post = this.store.get<PostRow>("SELECT * FROM posts WHERE id = ? AND status = 'active'", postId);
+    if (!post) return fail(404, 'NOT_FOUND', '帖子不存在');
+    const position = ChatService.decodeCursor(cursor);
+    if (cursor !== undefined && cursor !== '' && position === null) {
+      return fail(400, 'INVALID_CURSOR', '分页游标无效');
+    }
+    // 一次 JOIN 取评论 + 原评论作者昵称；parent 可能是已软删的评论，此时仍显示其作者
+    // （「回复某某」是历史事实，不该因为对方删了评论就变成「回复 null」）。
+    const select = `SELECT comment.*, parent_author.display_name AS reply_to_author_name
+      FROM post_comments comment
+      LEFT JOIN post_comments parent ON parent.id = comment.reply_to_id
+      LEFT JOIN users parent_author ON parent_author.id = parent.author_id
+      WHERE comment.post_id = ? AND comment.status = 'active'`;
+    const rows = position === null
+      ? this.store.all<PostCommentRow>(`${select} ORDER BY comment.created_at ASC, comment.id ASC LIMIT ?`,
+        postId, limit + 1)
+      : this.store.all<PostCommentRow>(`${select}
+          AND (comment.created_at > ? OR (comment.created_at = ? AND comment.id > ?))
+          ORDER BY comment.created_at ASC, comment.id ASC LIMIT ?`,
+      postId, position.t, position.t, position.id, limit + 1);
+    const items = rows.slice(0, limit);
+    const last = items.at(-1);
+    return {
+      items: items.map(row => this.postComment(row)),
+      nextCursor: rows.length > limit && last ? ChatService.encodeCursor(last.created_at, last.id) : null,
+    };
+  }
+
+  createPostComment(authorId: string, postId: string, content: string, replyToId: string | null) {
+    const post = this.store.get<PostRow>("SELECT * FROM posts WHERE id = ? AND status = 'active'", postId);
+    if (!post) return fail(404, 'NOT_FOUND', '帖子不存在');
+    const normalized = content.trim();
+    if (normalized === '') return fail(400, 'VALIDATION_ERROR', '评论内容不能为空');
+    if (Array.from(normalized).length > COMMENT_CONTENT_LIMIT) {
+      return fail(400, 'VALIDATION_ERROR', `评论内容不能超过 ${COMMENT_CONTENT_LIMIT} 字`);
+    }
+    if (replyToId !== null) {
+      // 必须存在且属于同一帖子：否则会造出「回复了另一个帖子的评论」这种指向错乱的数据。
+      const target = this.store.get<PostCommentRow>(
+        "SELECT * FROM post_comments WHERE id = ? AND post_id = ? AND status = 'active'", replyToId, postId);
+      if (!target) return fail(400, 'VALIDATION_ERROR', '引用的评论不存在');
+    }
+    const commentId = randomUUID();
+    const now = new Date().toISOString();
+    this.store.transaction(() => {
+      this.store.run(`INSERT INTO post_comments(id, post_id, author_id, content, reply_to_id, status, created_at)
+        VALUES (?, ?, ?, ?, ?, 'active', ?)`, commentId, postId, authorId, normalized, replyToId, now);
+      // 评论数重算，理由同 like_count。
+      this.store.run('UPDATE posts SET comment_count = (SELECT COUNT(*) FROM post_comments WHERE post_id = ? AND status = \'active\') WHERE id = ?',
+        postId, postId);
+    });
+    this.realtime.broadcastAll('post.commented', { postId, actorId: authorId });
+    const row = this.store.get<PostCommentRow>(`SELECT comment.*, parent_author.display_name AS reply_to_author_name
+      FROM post_comments comment
+      LEFT JOIN post_comments parent ON parent.id = comment.reply_to_id
+      LEFT JOIN users parent_author ON parent_author.id = parent.author_id
+      WHERE comment.id = ?`, commentId)!;
+    return this.postComment(row);
+  }
+
+  deletePostComment(viewerId: string, postId: string, commentId: string, isAdmin: boolean) {
+    const row = this.store.get<PostCommentRow>(
+      "SELECT * FROM post_comments WHERE id = ? AND post_id = ? AND status = 'active'", commentId, postId);
+    if (!row) return fail(404, 'NOT_FOUND', '评论不存在');
+    if (row.author_id !== viewerId && !isAdmin) return fail(403, 'FORBIDDEN', '只能删除自己的评论');
+    this.store.transaction(() => {
+      this.store.run("UPDATE post_comments SET status = 'deleted' WHERE id = ?", commentId);
+      this.store.run('UPDATE posts SET comment_count = (SELECT COUNT(*) FROM post_comments WHERE post_id = ? AND status = \'active\') WHERE id = ?',
+        postId, postId);
+    });
+    return { ok: true as const };
+  }
+
+  // ---------------------------------------------------------------------------
   // 管理后台（契约 §六）
   // ---------------------------------------------------------------------------
 
@@ -738,6 +1341,17 @@ export class ChatService {
     if (!row) return fail(401, 'UNAUTHORIZED', '请先登录');
     if (row.role !== 'admin') return fail(403, 'ADMIN_REQUIRED', '需要管理员权限');
     return row;
+  }
+
+  /**
+   * 是否为管理员 —— 供「作者或管理员可删」这类**可选**授权用。
+   *
+   * 与 requireAdmin 的区别：这里不抛错，普通用户返回 false 即可，
+   * 因为删帖/删评论的主路径是「作者本人」，管理员只是额外一条旁路。
+   * 用 requireAdmin 会把「普通用户删自己的帖子」也判成 403。
+   */
+  isAdmin(userId: string): boolean {
+    return this.store.get<{ role: string }>('SELECT role FROM users WHERE id = ?', userId)?.role === 'admin';
   }
 
   adminUsers(query: string, limit: number, offset: number) {
@@ -833,6 +1447,21 @@ export class ChatService {
       // 同理，该用户置顶过的消息行已在上面的 DELETE messages 里没了，pin 也应当一起消失。
       this.store.run('DELETE FROM message_pins WHERE pinned_by = ?', target.id);
       this.store.run(`DELETE FROM message_pins WHERE msg_id NOT IN (SELECT msg_id FROM messages)`);
+      // v2 广场：三张表对 users 都有外键（作者 / 点赞者 / 评论作者），不清理会直接 FOREIGN KEY failed。
+      // 顺序要求：先删评论与点赞，再删帖子（评论行引用 posts.id）。
+      this.store.run('DELETE FROM post_comments WHERE author_id = ?', target.id);
+      this.store.run('DELETE FROM post_likes WHERE user_id = ?', target.id);
+      // 该用户的帖子整帖删除（而不是软删）：作者账号都没了，软删的帖子仍会占着附件绑定，
+      // 让附件永远无法被复用。物理删帖后 post_attachments 的行随外键级联消失，附件得以释放。
+      const ownedPosts = this.store.all<{ id: string }>('SELECT id FROM posts WHERE author_id = ?', target.id);
+      for (const post of ownedPosts) {
+        this.store.run('DELETE FROM post_comments WHERE post_id = ?', post.id);
+        this.store.run('DELETE FROM post_likes WHERE post_id = ?', post.id);
+        this.store.run('DELETE FROM posts WHERE id = ?', post.id);
+      }
+      // 他人在他帖子下的评论已随上面一起删；但别人帖子下、别人对「他发的评论」的回复
+      // 仍指向已被删的评论 —— reply_to_id 若带外键会阻塞，这里统一置空，保留回复内容本身。
+      this.store.run('UPDATE post_comments SET reply_to_id = NULL WHERE reply_to_id IS NOT NULL AND reply_to_id NOT IN (SELECT id FROM post_comments)');
       this.store.run('DELETE FROM users WHERE id = ?', target.id);
     });
     for (const session of sessions) this.realtime.revoke(session.token_hash);

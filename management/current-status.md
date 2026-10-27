@@ -1,5 +1,68 @@
 # 接管审计与上线判定
 
+## 2026-10-27 · v2 平台升级：交付就绪，上线仍需用户决策
+
+结论：**代码层 GREEN（可交付构建产物），上线层 CONDITIONAL**。
+阻塞项不在代码，而在三件事：① HTTP 明文（SEC-01）未改用 HTTPS；② 需求 5 清库会删除线上真实用户
+`QJQ`，必须用户明确确认；③ iOS/Android 真机与容量/监控/回滚演练未做。
+
+v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.md` / `backend/API.md`。
+
+### 本轮实际复跑（2026-10-27）
+
+| 检查 | 命令 | 结果 |
+|---|---|---|
+| 契约机械校验 | `node scripts/check-contract.mjs` | **ERROR 0 / WARN 0**，`✅ 无差异`；openapi `0.3.0`、39 path / 49 operation |
+| 后端类型 | `node node_modules/typescript/bin/tsc --noEmit` | EXIT 0 |
+| 后端单测 | `node --experimental-strip-types --test test/*.test.ts` | **55/55 pass / 0 fail**（7 文件，含新增 `v2.test.ts`、`db-migration.test.ts`） |
+| 前端类型 | `npm run typecheck` | `vue-tsc --noEmit` 0 error |
+| 前端单测 | `npm test` | 14 files / **303 tests** 全绿 |
+| 生产构建 | `npm run build` | exit 0，`✓ built in 1.04s` + `strip-mock-worker.mjs` 校验通过 |
+| e2e 六项需求 | `node e2e-v2.mjs` | **61 项：PASS 60 / FAIL 0 / DEFECT 0 / SKIP 1** |
+| e2e 附件 / UX P0 / 矩阵 / 门禁 / 响应式 | 各自脚本 | 38/38、50/50、93/93、13 通过 0 失败 1 待验、117 断言 0 失败 |
+| 对话框无障碍 | `node scripts/verify-dialog-a11y.mjs` | 15/15 |
+| 需求 5 清库 | `backend/scripts/reset-db.mjs` 在真实库副本上 | 清 16 张业务表 → `users=1` → 重启 → `root/12345678` 登录 **200** |
+
+`e2e-v2` 的 1 项 SKIP 是预期的（`gate_a` 未设头像，首字母兜底属正常）。
+
+### v2 六项需求状态
+
+| # | 需求 | 状态 | 证据 |
+|---|---|---|---|
+| 1 | 个人信息重构（PC 左上角头像进抽屉 / 移动端底部第三位 tab / 退出登录二次确认 / 主题入口移入） | **已完成** | `e2e-v2`；`docs/evidence/v2-req1-*.png` |
+| 2 | 点头像进访客资料页 | **已完成** | `e2e-v2`；`docs/evidence/v2-req2-visitor-profile.png` |
+| 3 | ≥5 预置主题 + 自定义 RGB | **已完成**（7 套） | `e2e-v2`；`docs/evidence/v2-req3-*.png` |
+| 4 | 多图多文件（≤9 图 + ≤1 视频）、图片必带文字、文字不被吞、有附件 Enter 不发 | **已完成** | `e2e-v2` + `e2e-attachment`；`docs/evidence/v2-req4-*.png` |
+| 5 | 清库仅保留管理员 `root/12345678` | **脚本已完成并在副本上验证**；**尚未对生产库执行**（会删真实用户，需用户确认） | `backend/scripts/reset-db.mjs` |
+| 6 | 广场（帖子 / 图片 ≤9 / 视频 ≤1 / 文字 ≤5000） | **已完成** | `e2e-v2`；`docs/evidence/v2-req6-*.png` |
+
+### v2 带来的破坏性变更（上线必须同版）
+
+- 消息 `attachment` → `attachments[]`；发送体 `attachmentId` → `attachmentIds(1..9)`，且**有附件必须带文字**；
+- `type` 不再接受客户端传入（服务端按附件推导，增 `video`/`mixed`）；
+- `protocolVersion` 1 → 2（信封 `v` 仍为 1，两者不可混用）→ **前后端必须同时上线**；
+- `GET /uploads/:id` 权限放宽为四类（含广场帖引用、头像引用）；
+- `SCHEMA_VERSION` 3 → 4，启动自动迁移，不可回退 → **升级前必须备份库 + uploads 目录**。
+
+注意：`backend/deploy/DEPLOYED.md` 历史记录里「不修改数据库，无数据库迁移或重置」这句承诺在 v2 起**不再成立**。
+
+### 仍未关闭的风险
+
+1. **SEC-01 HTTP 明文**：生产入口 `http://mikuyun.xyz/chat/`，密码/token/消息全程明文。切换方案见
+   `backend/deploy/HTTPS-LETSENCRYPT.md`，需用户本人操作（助手不登录服务器）。
+2. **前端 `npm audit` high = 1**：`source-map-js` < 1.2.2，GHSA-68fv-2mgg-jv7q，有修复版本未升。
+3. **真机未验**：所有手机视口都是 Chrome 模拟，软键盘 / 安全区 / 后台标签页已读仍需真机。
+4. **`e2e-gates` 1 项待验**：headless 无法模拟切后台。
+5. **生产库有真实数据**：线上已有 `QJQ`，历史探针 `qja_probe` 未清理。跑 `reset-db.mjs` 会连真实用户一起删。
+6. **运维项未做**：同版 `npm ci` 产物校验、恢复/回滚演练、容量评估、监控告警及责任人。
+
+---
+
+## 历史判定：2026-10-08（v1，已过时，仅作留痕）
+
+> 下列内容为 v1 时代（commit `7ab67ef` 之前）的接管审计记录，**结论 NO-GO 针对的是当时的 v1 源码**。
+> v2 已重构相关路径并全量复跑（见上），但其中 SEC-01、真机、运维三项风险延续至今，未因 v2 关闭。
+
 日期：2026-10-08。结论：**NO-GO**。本轮最新稳定源码副本采样时间：11:51（Asia/Shanghai），之后的改动必须再次验收。
 
 ## 实际复跑
@@ -39,7 +102,7 @@
 
 浏览器使用一次性内存库和随机密码，不登录公网、不碰正式账号，截图只有合成数据。手机视口是 Chrome 模拟，不是 iOS/Android 真机。
 
-### 仍失败的六个反例
+### 仍失败的六个反例（v1 遗留，v2 已重构相关路径并全量复跑）
 
 1. 注销后迟到的消息历史仍回填私密缓存（SEC-02）。
 2. stop 后迟到 ticket 仍创建旧 socket（SEC-02）。

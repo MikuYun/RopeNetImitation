@@ -533,7 +533,7 @@ test('附件读取权限：属主、同会话成员、无关用户三档', async
 
   const image = await upload(backend, alice.token, PNG, '分享.png');
   const sent = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentId: image.id });
+    { clientMsgId: randomUUID(), content: '分享.png', attachmentIds: [image.id] });
   assert.equal(sent.statusCode, 201, sent.body);
 
   // 1. 属主自己。
@@ -563,7 +563,7 @@ test('附件读取权限：属主、同会话成员、无关用户三档', async
   assert.equal((await call(backend, 'DELETE', draft.url, alice.token)).statusCode, 204);
 });
 
-test('迁移：user_version 2 的库升到 3，补列回填且幂等不丢数据', async context => {
+test('迁移：user_version 2 的库升到最新，补列回填且幂等不丢数据', async context => {
   const directory = await mkdtemp(join(tmpdir(), 'aitrance-ux2-migrate-'));
   const databasePath = join(directory, 'chat.sqlite');
   const uploadsDir = join(directory, 'uploads');
@@ -633,11 +633,15 @@ test('迁移：user_version 2 的库升到 3，补列回填且幂等不丢数据
     assert.equal(upgraded.store.get<{ avatar_url: string }>('SELECT avatar_url FROM conversations WHERE id = ?', legacyGroupId)!.avatar_url, '');
     assert.equal(upgraded.store.get<{ role: string }>(
       'SELECT role FROM conversation_members WHERE conversation_id = ? AND user_id = ?', legacyGroupId, legacyUserId)!.role, 'owner');
-    // 老消息一字不动，attachment_id 为 NULL。
-    const message = upgraded.store.get<{ content: string; attachment_id: string | null }>(
-      'SELECT content, attachment_id FROM messages WHERE msg_id = ?', legacyMsgId)!;
+    // 老消息一字不动；v4 起 attachments 走关联表，messages 不再有 attachment_id 列。
+    const message = upgraded.store.get<{ content: string }>(
+      'SELECT content FROM messages WHERE msg_id = ?', legacyMsgId)!;
     assert.equal(message.content, '迁移前的消息');
-    assert.equal(message.attachment_id, null);
+    const messageSql = upgraded.store.get<{ sql: string }>(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages'")!.sql;
+    assert.ok(!messageSql.includes('attachment_id'), 'v4 之后 messages 不应再有 attachment_id 列');
+    // 老消息没有附件 → 关联表里也没有它的行。
+    assert.equal(upgraded.store.get('SELECT 1 FROM message_attachments WHERE msg_id = ?', legacyMsgId), undefined);
     // 迁移后的库能正常读历史（证明结构真的可用，而不只是版本号变了）。
     const token = (await login(upgraded, 'legacyalice', 'legacy-password-123')).token;
     assert.equal((await call(upgraded, 'GET', `/api/v1/conversations/${legacyGroupId}/messages`, token)).json().items[0].content, '迁移前的消息');

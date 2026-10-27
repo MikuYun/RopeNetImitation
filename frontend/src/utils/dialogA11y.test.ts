@@ -156,9 +156,11 @@ describe('dialogA11y —— 与 e2e 的契约锁', () => {
   })
 
   it('两个对话框组件都真的接上了 dialogKeyAction（防止函数写完没人用）', () => {
+    // v2：移动端「更多」sheet 已从 MobileNav 删除，弹层迁到 profile/ProfileSheet
+    // （rail 侧则新增了 profile/ProfileDrawer）。契约仍要求「每个自建对话框都接上」。
     for (const rel of [
       'src/components/base/AppModal.vue',
-      'src/components/layout/MobileNav.vue',
+      'src/components/profile/ProfileSheet.vue',
     ]) {
       const src = readFileSync(resolve(SRC, rel), 'utf8')
       expect(src).toContain("from '@/utils/dialogA11y'")
@@ -170,7 +172,8 @@ describe('dialogA11y —— 与 e2e 的契约锁', () => {
   it('两个对话框容器都带 tabindex="-1"（否则无焦点元素时无法把焦点移入弹层）', () => {
     for (const rel of [
       'src/components/base/AppModal.vue',
-      'src/components/layout/MobileNav.vue',
+      'src/components/profile/ProfileSheet.vue',
+      'src/components/profile/ProfileDrawer.vue',
     ]) {
       const src = readFileSync(resolve(SRC, rel), 'utf8')
       expect(src).toContain('tabindex="-1"')

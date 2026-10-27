@@ -315,7 +315,7 @@ withDefaults(
 }
 
 /* 深色：渐变左栏本来就够深，只需把卡片面与分隔线提一档 */
-:root[data-theme='dark'] .auth__shell {
+:root[data-theme-mode='dark'] .auth__shell {
   background: var(--app-panel);
   border-color: var(--app-border-strong);
 }

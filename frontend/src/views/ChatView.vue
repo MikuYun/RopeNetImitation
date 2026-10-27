@@ -10,6 +10,11 @@
  * 【路由是屏幕状态的唯一事实源】不再维护第二套 selectedConversation：
  * activeId 由路由参数派生。否则「点了会话但路由没跳」「返回了但高亮还在」
  * 这类失同步迟早出现，而且在手机端会直接表现为显示错屏。
+ *
+ * v2（参考 QQ/微信）：
+ *   - 新增「广场」：桌面 rail 第三 tab + 移动端列表屏顶部入口。
+ *   - 新增「访客资料页」与桌面「个人信息抽屉」。
+ *   - 移动端「个人资料」从顶部横条移到 MobileNav 第三位（需求 1）。
  */
 import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -20,6 +25,7 @@ import ContactPanel from '@/components/layout/ContactPanel.vue'
 import AppIcon from '@/components/base/AppIcon.vue'
 import AppToaster from '@/components/base/AppToaster.vue'
 import GroupCreateModal from '@/components/group/GroupCreateModal.vue'
+import ProfileDrawer from '@/components/profile/ProfileDrawer.vue'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { useAuthStore } from '@/stores/auth'
 import { useConversationStore } from '@/stores/conversation'
@@ -56,19 +62,25 @@ watch(
   () => route.name,
   (name) => {
     if (name === 'new-friend') ui.setRailTab('contacts')
+    if (name === 'square') ui.setRailTab('chats')
   },
   { immediate: true },
 )
 
 /* ── 手机端屏幕切换 ───────────────────────────────────────────────── */
 
-/** 正文屏：会话内容、会话详情，以及 ux2 新增的个人资料页 / 管理后台。 */
+/**
+ * 正文屏：会话内容、会话详情、个人资料、管理后台，以及 v2 新增的
+ * 广场与访客资料页。这些屏在手机上独占整屏（自带返回按钮）。
+ */
 const isContentScreen = computed(
   () =>
     route.name === 'chat' ||
     route.name === 'conversation-info' ||
     route.name === 'profile' ||
-    route.name === 'admin',
+    route.name === 'admin' ||
+    route.name === 'square' ||
+    route.name === 'user-profile',
 )
 
 /** 手机上的联系人屏。 */
@@ -79,28 +91,25 @@ const isContactsScreen = computed(
 /** 手机上的会话列表屏。 */
 const isListScreen = computed(() => !isContentScreen.value && !isContactsScreen.value)
 
-/* ── ux2：个人资料 / 管理后台入口 ─────────────────────────────────── */
+/* ── 管理后台入口（仅管理员可见） ─────────────────────────────────── */
 
 /**
  * 管理后台入口只对 role==='admin' 可见。
  *
  * 【为什么还要判一次】真正的边界在后端（`requireAdmin` → 403 ADMIN_REQUIRED）
  * 与路由守卫（`canAccessAdmin`）。这里只是「不给用户看一个点进去必被弹回的
- * 按钮」的可见性收敛，不承担安全职责。用 `canAccessAdmin` 而不是内联
- * `role === 'admin'`，是为了让它和守卫共用同一处判定、同一份单测。
+ * 按钮」的可见性收敛，不承担安全职责。
  */
 const showAdminEntry = computed(() => canAccessAdmin(auth.user?.role))
 
-/** 当前是否已经在这个页面上（用于给入口按钮置 aria-current）。 */
-const onProfile = computed(() => route.name === 'profile')
 const onAdmin = computed(() => route.name === 'admin')
+const onSquare = computed(() => route.name === 'square')
 
-/** 入口跳转：这两个页面都是 /chat 的子路由，push 即可保留外壳。 */
-function openProfile(): void {
-  if (!onProfile.value) void router.push({ name: 'profile' })
-}
 function openAdmin(): void {
   if (!onAdmin.value) void router.push({ name: 'admin' })
+}
+function openSquare(): void {
+  if (!onSquare.value) void router.push({ name: 'square' })
 }
 
 /* ── 首屏数据 ─────────────────────────────────────────────────────── */
@@ -119,9 +128,7 @@ onMounted(async () => {
     void presence.prefetch([...ids])
 
     // 群聊的会话列表预览要显示「发送者：内容」，而 senderId -> 昵称的映射
-    // 只有会话详情（members[]）里有。故为**有消息的群聊**预取详情（限量，
-    // 避免会话很多时打出一串请求）。拿不到时预览会省略前缀，不会显示成
-    // 「：内容」这种残缺形式（见 ConversationItem.preview）。
+    // 只有会话详情（members[]）里有。故为**有消息的群聊**预取详情（限量）。
     const groups = convStore.list
       .filter((c) => c.type === 'group' && c.lastMessage)
       .slice(0, 10)
@@ -145,21 +152,20 @@ onMounted(async () => {
 
       <template v-else>
         <!--
-          ux2：手机上的「个人资料 / 管理后台」入口。
-          做成**列表屏顶部的一条横条**，而不是浮在内容上的悬浮按钮 ——
-          task-10 刚修完「浮层遮挡正文」的缺陷，这里不再引入新的遮挡源。
+          列表屏顶部横条：v2 起「个人资料」移到 MobileNav 第三位（需求 1），
+          这里只保留「广场」与（管理员的）「管理后台」。
           正文屏（isContentScreen）不显示它：进入页面自带返回按钮。
         -->
         <div class="shell__me">
           <button
             class="shell__me-btn"
             type="button"
-            :class="{ 'shell__me-btn--on': onProfile }"
-            :aria-current="onProfile ? 'page' : undefined"
-            @click="openProfile"
+            :class="{ 'shell__me-btn--on': onSquare }"
+            :aria-current="onSquare ? 'page' : undefined"
+            @click="openSquare"
           >
-            <AppIcon name="contact" :size="16" />
-            <span class="shell__me-text">个人资料</span>
+            <AppIcon name="compass" :size="16" />
+            <span class="shell__me-text">广场</span>
           </button>
           <button
             v-if="showAdminEntry"
@@ -187,26 +193,12 @@ onMounted(async () => {
       <RouterView />
 
       <!--
-        ux2：桌面入口贴在左侧竖栏（rail）的下半部空白区里，绝对定位在
-        `.shell` 上，`left:0; width: var(--spacing-rail)` 与 rail 同宽。
-        【为什么不放在内容区右上角】那里是 `.pane__more`（会话信息）的位置，
-        浮层会盖住它，和 task-10 修掉的「浮层遮挡」是同一类问题。
-        【为什么不改 AppRail】它属于 task-10 的写作用域。
+        桌面：管理后台入口贴在左侧竖栏（rail）下半部空白区。
+        v2 起「个人资料」不再用这个入口 —— 改为点击 rail 顶部的真实头像
+        打开 ProfileDrawer（需求 1：个人信息放左上角）。
       -->
-      <div class="shell__me shell__me--rail">
+      <div v-if="showAdminEntry" class="shell__me shell__me--rail">
         <button
-          class="shell__me-btn shell__me-btn--icon"
-          type="button"
-          title="个人资料"
-          aria-label="个人资料"
-          :class="{ 'shell__me-btn--on': onProfile }"
-          :aria-current="onProfile ? 'page' : undefined"
-          @click="openProfile"
-        >
-          <AppIcon name="contact" :size="18" />
-        </button>
-        <button
-          v-if="showAdminEntry"
           class="shell__me-btn shell__me-btn--icon"
           type="button"
           title="管理后台"
@@ -218,6 +210,9 @@ onMounted(async () => {
           <AppIcon name="users" :size="18" />
         </button>
       </div>
+
+      <!-- 桌面个人信息抽屉：宽度覆盖会话列表列，由 ui.profileDrawerOpen 控制 -->
+      <ProfileDrawer />
     </template>
 
     <GroupCreateModal />
@@ -245,7 +240,7 @@ onMounted(async () => {
   border-right: none;
 }
 
-/* ── ux2 入口 ──────────────────────────────────────────────────── */
+/* ── 列表屏顶部横条 ────────────────────────────────────────────── */
 
 .shell__me {
   flex: 0 0 auto;
@@ -319,26 +314,5 @@ onMounted(async () => {
 }
 .shell__me-text {
   white-space: nowrap;
-}
-</style>
-
-<style scoped>
-.shell {
-  display: flex;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  position: relative;
-}
-/* 手机上列表/正文互斥，纵向排列：内容区在上、底部导航在下 */
-.shell--mobile {
-  flex-direction: column;
-}
-.shell__pane {
-  flex: 1;
-  min-height: 0;
-  width: 100%;
-  /* 手机上列表占满宽度，不再是固定 280px 的一栏 */
-  border-right: none;
 }
 </style>

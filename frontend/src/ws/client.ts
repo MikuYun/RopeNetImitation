@@ -19,6 +19,7 @@ import {
   RECONNECT_WARN_THRESHOLD,
   WATCHDOG_FACTOR,
   WS_CLOSE,
+  WS_ENVELOPE_VERSION,
   WS_PROTOCOL_VERSION,
 } from './constants'
 import { getTicket, TicketAuthError, TicketRateLimitError } from './ticket'
@@ -165,7 +166,7 @@ export class WsClient {
     if (gen !== this.gen) return
 
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-    const url = `${proto}//${location.host}/ws?ticket=${encodeURIComponent(ticket)}&v=${WS_PROTOCOL_VERSION}`
+    const url = `${proto}//${location.host}/ws?ticket=${encodeURIComponent(ticket)}&v=${WS_ENVELOPE_VERSION}`
 
     let ws: WebSocket
     try {
@@ -231,7 +232,7 @@ export class WsClient {
     }
     const env = result.data
 
-    if (env.v !== WS_PROTOCOL_VERSION) {
+    if (env.v !== WS_ENVELOPE_VERSION) {
       this.clearTimers()
       this.manualClose = true
       this.setState('stopped')

@@ -82,7 +82,7 @@ withDefaults(
   fill: var(--color-brand-500);
   opacity: 0.07;
 }
-:root[data-theme='dark'] .empty__halo {
+:root[data-theme-mode='dark'] .empty__halo {
   opacity: 0.12;
 }
 

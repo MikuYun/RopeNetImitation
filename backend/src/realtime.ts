@@ -73,6 +73,26 @@ export class Realtime {
     }
   }
 
+  /**
+   * 广播给所有在线用户（v2 广场事件）。
+   *
+   * 广场帖子没有「成员名单」，点赞/评论/删帖要通知的是全体在线用户，
+   * 因此这里没有收件人过滤 —— 与 publish 共用同一份序列化结果，
+   * 保证同一条事件在所有人那里 id/timestamp 完全一致（前端可据此去重）。
+   *
+   * 注意：在线用户数可能很大，Action 里不要放完整 Post（含作者 User 与附件），
+   * 只放 {postId, actorId}，客户端收到后自行决定是否重拉列表。
+   */
+  broadcastAll(type: string, data: unknown): void {
+    const event = JSON.stringify({ v: 1, id: randomUUID(), type, timestamp: new Date().toISOString(), data });
+    for (const clients of this.clients.values()) {
+      for (const client of clients) {
+        if (this.sessionValid(client)) this.send(client.socket, event);
+        else client.socket.close(4003, 'Session expired');
+      }
+    }
+  }
+
   private send(socket: WebSocket, event: string): void {
     if (socket.readyState !== 1) return;
     if (socket.bufferedAmount > 1024 * 1024) {
@@ -157,7 +177,7 @@ export class Realtime {
     });
     const serverTime = new Date().toISOString();
     this.send(socket, JSON.stringify({ v: 1, id: randomUUID(), type: 'ready', timestamp: serverTime,
-      data: { userId: identity.userId, serverTime, protocolVersion: 1 } }));
+      data: { userId: identity.userId, serverTime, protocolVersion: 2 } }));
     if (!wasOnline) this.presence(identity.userId, true);
   }
 
@@ -193,11 +213,16 @@ export class Realtime {
     let uploads = 0;
     if (this.messageDays > 0) {
       const cutoff = new Date(Date.now() - this.messageDays * 86_400_000).toISOString();
+      // v2：消息与附件是 message_attachments 多对多，删消息时该表的行随外键级联消失，
+      // 因此这里的孤儿判定改为「没有被任何 message_attachments 行引用」。
       messages = Number(this.store.run('DELETE FROM messages WHERE created_at <= ?', cutoff).changes);
       // 先查后删：删完就拿不到 mime_type 了，而磁盘文件名需要它推导扩展名。
-      // NOT EXISTS 而不是 NOT IN：attachment_id 为 NULL 的行在 NOT IN 下会污染整个结果集。
+      // NOT EXISTS 而不是 NOT IN：子查询若有 NULL 会污染整个结果集。
       const orphans = this.store.all<{ id: string; mime_type: string }>(`SELECT id, mime_type FROM uploads
-        WHERE created_at <= ? AND NOT EXISTS (SELECT 1 FROM messages WHERE messages.attachment_id = uploads.id)`, cutoff);
+        WHERE created_at <= ? AND NOT EXISTS (
+          SELECT 1 FROM message_attachments WHERE message_attachments.attachment_id = uploads.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM post_attachments WHERE post_attachments.attachment_id = uploads.id)`, cutoff);
       for (const orphan of orphans) {
         // 先删库再删文件：进程在两步之间崩溃时只会剩一个孤儿文件，下一轮 sweep 会再试；
         // 反过来（先删文件）则会留下「库里有记录、文件已没了」的坏记录，GET 只会 404，更糟。

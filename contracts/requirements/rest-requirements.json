@@ -2,7 +2,7 @@
   "$comment": "aitrance-chat REST 契约需求书 v0.3.0。事实源为 backend/openapi.json (openapi 3.0.3, info.version 0.2.0) 与 backend/API.md。本文档不发明第二套 API：路径、字段名、包装、错误码一律以后端已实现者为准。本文件的作用是（1）记录前端对每个字段的依赖强度（required 表示前端会崩），（2）给 check-contract.mjs 提供机械比对基准。v0.1.0 中被后端拒绝的提案已删除，差异逐条记录在 endpoints[].diff。 v0.3.0（第二轮体验改造）：新增 3 个置顶端点（P1/P2/P3）、1 个群角色端点（C9）、4 个管理后台端点（D1~D4）；User 增 uid/role/status/mutedUntil，ConversationMember.role 与 Conversation.myRole 扩为 owner|admin|member，登录 username 放宽为「用户名或纯数字 uid」，PUT 头像放宽到 /api/v1/uploads/<uuid>，GET /api/v1/uploads/{id} 的可读范围从「仅属主」放宽到「属主或同会话成员」。openapi 的 info.version 仍是 0.2.0：以上全部属新增端点/新增可选字段/新增枚举值，按 docs/09-contract-changelog.md 的规则不 bump。",
   "version": "0.3.0",
   "supersedes": "0.2.0",
-  "openapiVersion": "0.2.0",
+  "openapiVersion": "0.3.0",
   "sourceOfTruth": "backend/openapi.json + backend/API.md",
   "alignment": "check-contract.mjs 以本文件为基准反向比对 backend/openapi.json，输出 docs/contract/diff-report.md",
   "conventions": {
@@ -24,7 +24,8 @@
     "errorEnvelope": "{error:{code,message,traceId}}，见 errors.json。前端只按 code 分支。",
     "unreadAuthority": "unreadCount 一律以服务端为准。前端本地清零仅作乐观显示，收到服务端权威值后立即覆盖。",
     "textSafety": "消息正文与昵称由后端原样返回，前端必须文本渲染，严禁 v-html 或任何 HTML 注入路径。",
-    "versionFields": "两个不同的版本字段：【version】= 后端实现版本（字符串，如 0.2.0），随实现迭代；【protocolVersion】= 协议版本（数字，当前 1），只在协议不兼容时 bump。前端只对 protocolVersion 做比对与告警，对 version 仅打印。"
+    "versionFields": "两个不同的版本字段：【version】= 后端实现版本（字符串，如 0.3.0），随实现迭代；【protocolVersion】= 协议版本（数字，当前 2；v2 增加多附件/撤回/引用/广场，ready 帧与 /health 同步为 2），只在协议不兼容时 bump。前端只对 protocolVersion 做比对与告警，对 version 仅打印。",
+    "cursorPagination": "游标分页（广场/评论）：query {cursor?, limit?}，limit 默认 20、最大 50；响应 {items, nextCursor}，nextCursor 为不透明 base64url 字符串，null 表示没有下一页。既有 pageQuery 端点仍用 {limit, offset} + {items, nextOffset}，两者不混用。"
   },
   "definitions": {
     "User": {
@@ -204,7 +205,10 @@
         "seq",
         "type",
         "content",
-        "attachment",
+        "attachments",
+        "recalled",
+        "recalledAt",
+        "replyTo",
         "createdAt"
       ],
       "properties": {
@@ -238,31 +242,50 @@
             "text",
             "system",
             "image",
-            "file"
+            "video",
+            "file",
+            "mixed"
           ],
-          "description": "text/system 由服务端与客户端写入；image/file 仅由服务端在发送附件消息时按上传物 kind 推导，客户端不得自行指定。"
+          "description": "text/system 由服务端与客户端写入；image/video/file/mixed 仅由服务端在发送附件消息时按上传物 kind 组合推导，客户端不得自行指定（请求体已不接受 type）。只有一个 kind 时取该 kind，两种以上为 mixed。"
         },
         "content": {
           "type": "string",
           "maxLength": 4000,
-          "description": "system 消息的 content 为服务端渲染好的纯文本，前端直接渲染，绝不能当 HTML。"
-        },
-        "attachment": {
-          "type": "object",
-          "nullable": true,
-          "allOf": [
-            {
-              "$ref": "#/definitions/Attachment"
-            }
-          ],
-          "description": "附件视图；纯文本与 system 消息恒为 null（字段恒存在，不是省略）。"
+          "description": "纯文本正文或附件消息附带的文字；撤回后为空串。system 消息的 content 为服务端渲染好的纯文本，前端直接渲染，绝不能当 HTML。"
         },
         "createdAt": {
           "type": "string",
           "format": "date-time"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Attachment"
+          },
+          "description": "附件视图数组，恒存在；无附件时为 []，撤回后强制为 []。一条消息最多 9 个附件且视频最多 1 个。"
+        },
+        "recalled": {
+          "type": "boolean",
+          "description": "是否已撤回；撤回后 content 强制为空串、attachments 强制为 []，前端渲染「消息已撤回」占位。"
+        },
+        "recalledAt": {
+          "type": "string",
+          "format": "date-time",
+          "nullable": true,
+          "description": "撤回时间；未撤回为 null（字段恒存在）。"
+        },
+        "replyTo": {
+          "type": "object",
+          "nullable": true,
+          "allOf": [
+            {
+              "$ref": "#/definitions/ReplyRef"
+            }
+          ],
+          "description": "引用回复；未引用为 null（字段恒存在）。"
         }
       },
-      "note": "字段名为 content（非 v0.1 提案的 body.text）；Message 无独立 id 字段，主键即 msgId。本轮上传扩展起 type 增加 image/file，并新增恒存在的可空字段 attachment（openapi 版本号仍为 0.2.0，属向后兼容增量）。"
+      "note": "字段名为 content（非 v0.1 提案的 body.text）；Message 无独立 id 字段，主键即 msgId。v0.3.0 起：删除单数 attachment（改为恒存在的 attachments 数组）、type 增加 video/mixed、新增 recalled/recalledAt/replyTo。openapi info.version 同步为 0.3.0，协议版本 protocolVersion 升为 2。"
     },
     "ConversationMember": {
       "type": "object",
@@ -501,14 +524,14 @@
         },
         "version": {
           "type": "string",
-          "description": "后端实现版本（当前 0.2.0）"
+          "description": "后端实现版本（当前 0.3.0）"
         },
         "protocolVersion": {
           "type": "number",
           "enum": [
-            1
+            2
           ],
-          "description": "WS/REST 协议版本号，当前为数字 1（不是实现版本 0.2.0）。前端用于与本地 WS_PROTOCOL_VERSION 比对：不等则提示刷新并停止重连。"
+          "description": "WS/REST 协议版本号，当前为数字 2（v2 起多附件/撤回/引用/广场；不是实现版本 0.3.0）。前端用于与本地 WS_PROTOCOL_VERSION 比对：不等则提示刷新并停止重连。"
         },
         "serverTime": {
           "type": "string",
@@ -595,8 +618,10 @@
           "type": "string",
           "enum": [
             "image",
+            "video",
             "file"
-          ]
+          ],
+          "description": "image / video / file，由服务端按嗅探出的 mimeType 推导；决定消息 type 与下载时的 Content-Disposition。"
         },
         "url": {
           "type": "string",
@@ -631,13 +656,13 @@
         },
         "mimeType": {
           "type": "string",
-          "description": "服务端按魔数嗅探，白名单：image/png、image/jpeg、image/webp、image/gif、application/pdf、application/zip、text/plain。"
+          "description": "服务端按魔数嗅探（不信任客户端声明），白名单：image/png、image/jpeg、image/webp、image/gif、video/mp4、video/webm、application/pdf、application/zip、text/plain。"
         },
         "size": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 10485760,
-          "description": "1..10485760 字节；裸 body 上限 11 MiB 是给「超限要能回 413 而不是断开」留的余量。"
+          "maximum": 104857600,
+          "description": "图片/文件 1..10485760 字节（10 MiB），视频 1..104857600 字节（100 MiB）；超业务上限回 413 UPLOAD_TOO_LARGE。裸 body 传输层上限约 101 MiB 是给「超限要能回 413 而不是断开」留的余量。"
         },
         "sha256": {
           "type": "string",
@@ -647,9 +672,10 @@
           "type": "string",
           "enum": [
             "image",
+            "video",
             "file"
           ],
-          "description": "image 当且仅当 mimeType 以 image/ 开头；决定消息 type 与下载时的 Content-Disposition。"
+          "description": "image 当且仅当 mimeType 以 image/ 开头，video 当且仅当以 video/ 开头，其余为 file；决定消息 type 与下载时的 Content-Disposition。"
         },
         "url": {
           "type": "string"
@@ -750,6 +776,249 @@
           "description": "当前有至少一条活跃 WS 连接的**去重用户数**，不是连接数。"
         }
       }
+    },
+    "ReplyRef": {
+      "type": "object",
+      "required": [
+        "msgId",
+        "senderId",
+        "senderName",
+        "preview"
+      ],
+      "properties": {
+        "msgId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "被引用消息的 msgId。"
+        },
+        "senderId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "senderName": {
+          "type": "string",
+          "description": "被引用消息发送者的 displayName 快照（发送者已注销时为「已注销用户」）。"
+        },
+        "preview": {
+          "type": "string",
+          "description": "服务端渲染的引用摘要：文本取前 60 个字符；图片「[图片]」；视频「[视频]」；文件「[文件] 名称」；混合按第一个附件；原消息已撤回或已删为「[消息已撤回]」。前端直接渲染纯文本，禁止当 HTML。"
+        }
+      },
+      "note": "消息引用（回复）视图。原消息不存在时 replyTo 整体为 null（而不是返回残缺对象）。"
+    },
+    "Relationship": {
+      "type": "string",
+      "enum": [
+        "none",
+        "friend",
+        "request_sent",
+        "request_received",
+        "self"
+      ],
+      "description": "访客与当前登录用户的关系：self=本人；friend=好友；request_sent=我发了好友申请待对方处理；request_received=对方发了好友申请待我处理；none=陌生人。"
+    },
+    "UserProfileView": {
+      "type": "object",
+      "required": [
+        "user",
+        "relationship",
+        "conversationId",
+        "postCount",
+        "friendCount"
+      ],
+      "properties": {
+        "user": {
+          "$ref": "#/definitions/User"
+        },
+        "relationship": {
+          "$ref": "#/definitions/Relationship"
+        },
+        "conversationId": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "与当前用户的单聊会话 id；不存在（陌生人且未建会话）时为 null。"
+        },
+        "postCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "该作者状态为 active 的帖子数。"
+        },
+        "friendCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "该用户的好友数（friendships 单向计数）。"
+        }
+      },
+      "note": "访客资料页专用视图；user 复用 User 定义，绝不包含 password_hash。"
+    },
+    "Post": {
+      "type": "object",
+      "required": [
+        "id",
+        "author",
+        "content",
+        "attachments",
+        "likeCount",
+        "commentCount",
+        "likedByMe",
+        "mine",
+        "createdAt",
+        "updatedAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "author": {
+          "$ref": "#/definitions/User"
+        },
+        "content": {
+          "type": "string",
+          "maxLength": 5000,
+          "description": "正文；可以为空串（纯附件帖），长度按 Unicode 码点计（Array.from）。前端必须按纯文本渲染，禁止当 HTML。"
+        },
+        "attachments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Attachment"
+          },
+          "description": "附件数组，恒存在；广场只允许 image/video，不允许通用 file；最多 9 个且视频最多 1 个。"
+        },
+        "likeCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "点赞数，服务端按 post_likes 实际行数重算，恒准确。"
+        },
+        "commentCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "状态为 active 的评论数，服务端重算。"
+        },
+        "likedByMe": {
+          "type": "boolean",
+          "description": "当前登录用户是否已点赞。"
+        },
+        "mine": {
+          "type": "boolean",
+          "description": "作者是否为当前登录用户；前端据此显示删除按钮（管理员也能删，但以自身权限判定，不依赖该字段）。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "广场帖子。列表按 created_at DESC, id DESC 游标分页；软删（status=deleted）后不再出现在任何列表。"
+    },
+    "PostComment": {
+      "type": "object",
+      "required": [
+        "id",
+        "postId",
+        "author",
+        "content",
+        "replyToId",
+        "replyToAuthorName",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "postId": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "author": {
+          "$ref": "#/definitions/User"
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "description": "评论正文，长度按 Unicode 码点计（Array.from）；前后空白被服务端 trim。"
+        },
+        "replyToId": {
+          "type": "string",
+          "format": "uuid",
+          "nullable": true,
+          "description": "被回复评论 id；顶层评论为 null。"
+        },
+        "replyToAuthorName": {
+          "type": "string",
+          "nullable": true,
+          "description": "被回复评论作者的 displayName；顶层评论或父评论已删时为 null。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "评论按 created_at ASC, id ASC 游标分页（楼层顺序）。"
+    },
+    "PostPage": {
+      "type": "object",
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Post"
+          }
+        },
+        "nextCursor": {
+          "type": "string",
+          "nullable": true,
+          "description": "下一页游标（不透明字符串）；null = 没有下一页。"
+        }
+      }
+    },
+    "PostCommentPage": {
+      "type": "object",
+      "required": [
+        "items",
+        "nextCursor"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PostComment"
+          }
+        },
+        "nextCursor": {
+          "type": "string",
+          "nullable": true
+        }
+      }
+    },
+    "PostLikeResult": {
+      "type": "object",
+      "required": [
+        "liked",
+        "likeCount"
+      ],
+      "properties": {
+        "liked": {
+          "type": "boolean",
+          "description": "本次操作后的状态：点赞端点恒 true，取消端点恒 false。"
+        },
+        "likeCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "操作后的真实点赞数。"
+        }
+      },
+      "note": "点赞/取消点赞幂等：重复点赞不报错，重复取消也不报错。"
     }
   },
   "endpoints": [
@@ -1121,6 +1390,94 @@
       ],
       "diff": "v0.1 拟 GET /users/search 精确匹配 + 返回 relationship；后端为 GET /users?q=&limit=&offset= 模糊匹配且不返回 relationship。前端在 normalize 层用已加载的好友/申请列表本地推导 relationship（见 diff-report A12）。",
       "frontendContract": "limit/offset 在 openapi 中为 required，前端必须显式传值（不可依赖默认）。"
+    },
+    {
+      "id": "U7",
+      "method": "GET",
+      "path": "/api/v1/users/{userId}",
+      "required": true,
+      "success": 200,
+      "summary": "访客资料：目标用户信息 + 与当前用户的关系 + 单聊会话 id + 帖子数/好友数。",
+      "pathParams": [
+        {
+          "name": "userId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/UserProfileView"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 由 deferredEndpoints 的 X1 转正。userId 必须是 UUID（格式非法回 400 VALIDATION_ERROR），因此不会与 GET /users/me、GET /users 冲突；路由注册顺序上 /users/me 必须先于 /users/:userId。",
+      "frontendContract": "【资料页】(1) relationship 决定按钮：none→加好友，request_sent→「已申请」禁用，request_received→接受/拒绝，friend→发消息+删好友，self→编辑资料；(2) conversationId 为 null 时「发消息」需先 POST /conversations/direct 再跳转；(3) 不要假设响应里有 password_hash 或 email，User 定义里没有这些字段。"
+    },
+    {
+      "id": "U8",
+      "method": "GET",
+      "path": "/api/v1/users/{userId}/posts",
+      "required": true,
+      "success": 200,
+      "summary": "某用户的广场帖子列表（游标分页，created_at DESC）。",
+      "pathParams": [
+        {
+          "name": "userId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "不透明游标；首屏不传。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 20
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/PostPage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "INVALID_CURSOR",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。只返回 status=active 的帖子；用户不存在回 404 NOT_FOUND。游标与 GET /posts 同构，但不能跨端点复用（游标内含排序键，混用会跳条）。",
+      "frontendContract": "【个人主页】只在资料页展示；首屏 limit 取 20，nextCursor 为 null 时停止上拉加载。"
     },
     {
       "id": "F1",
@@ -1783,7 +2140,7 @@
       "path": "/api/v1/conversations/{conversationId}/messages",
       "required": true,
       "success": 201,
-      "summary": "发送文本或附件消息，以 clientMsgId 幂等重试。首次持久化返回 201 并广播；同用户同 clientMsgId 同会话同内容（含同一 attachmentId）重试返回 200 原消息且不再广播。",
+      "summary": "发送文本/附件消息（最多 9 个附件、视频最多 1 个，可引用回复），以 clientMsgId 幂等重试。首次持久化返回 201 并广播；同用户同 clientMsgId 同会话同内容（含同一附件集合与同一 replyToMsgId）重试返回 200 原消息且不再广播。",
       "pathParams": [
         {
           "name": "conversationId",
@@ -1800,25 +2157,30 @@
         "properties": {
           "clientMsgId": {
             "type": "string",
-            "format": "uuid"
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "text"
-            ],
-            "description": "仅为向后兼容保留的老客户端字段；传了必须等于 text，服务端会忽略它并按 content/attachmentId 自行判定。附件消息不要传 type。"
+            "format": "uuid",
+            "description": "客户端生成；同一逻辑消息的所有重试必须复用同一个值。"
           },
           "content": {
             "type": "string",
-            "minLength": 1,
             "maxLength": 4000,
-            "description": "纯文本消息必填且不能全是空白；附件消息可省略或传空串。"
+            "description": "正文。带附件时必填且不能全是空白（否则 400 VALIDATION_ERROR「发送附件时必须附带文字」），长度按 Unicode 码点计最多 4000；纯文本消息同样必填非空白。"
           },
-          "attachmentId": {
+          "attachmentIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 9,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "先调 POST /api/v1/uploads 拿到的 id 列表，按数组顺序决定展示顺序；必须全部属于发送者本人、且均未被任何消息或帖子引用，否则 400 INVALID_ATTACHMENT / 409 UPLOAD_IN_USE。"
+          },
+          "replyToMsgId": {
             "type": "string",
             "format": "uuid",
-            "description": "先调 POST /api/v1/uploads 拿到的 id，必须属于发送者本人且未被任何消息引用。"
+            "nullable": true,
+            "description": "被引用消息的 msgId，必须存在且属于同一会话，否则 400 VALIDATION_ERROR「引用的消息不存在」；null 或不传表示不引用。"
           }
         }
       },
@@ -1834,6 +2196,7 @@
         404,
         409,
         413,
+        415,
         429,
         500
       ],
@@ -1842,13 +2205,57 @@
         "CONVERSATION_NOT_FOUND",
         "IDEMPOTENCY_CONFLICT",
         "INVALID_ATTACHMENT",
+        "ATTACHMENT_LIMIT",
         "UPLOAD_IN_USE",
         "MUTED",
         "ACCOUNT_BANNED",
         "RATE_LIMITED"
       ],
-      "diff": "v0.1 拟 body {clientMsgId,type,body:{text}} 且统一 201；v0.2 为 {clientMsgId,type?,content?,attachmentId?} 且 200/201 双码。本轮上传扩展起 content 与 type 变为可选：只给 attachmentId 即可发送附件消息，消息 type 由服务端按上传物 kind 推导（image→image，其余→file），客户端传的 type 被忽略而不报错。content 与 attachmentId 都没有 → 400 VALIDATION_ERROR。 v0.3.0 起本端点还可返回 403 MUTED（禁言期）与 403 ACCOUNT_BANNED（账号被封）：两者都是「身份/权限」而非「输入」问题，前端应分别提示「禁言至 XX」与「账号已被封禁」，不要一律当成格式错误。",
-      "frontendContract": "【幂等纪律】(1) 重试必须复用原 clientMsgId 与原正文（附件消息即同一 attachmentId），绝不能每次重试生成新 id；(2) 同 id 换会话或换内容返回 409 IDEMPOTENCY_CONFLICT，属前端缺陷；(3) REST 返回与 WS message.created 可能先后交错，两条路径都必须经同一个 insertOrIgnore 去重；(4) 发送走 REST，不存在 WS 发消息 ack 帧；(5) 附件消息流程：先 POST /api/v1/uploads 拿 id，再发消息带 attachmentId；上传成功但发消息失败时附件成为孤儿，可重试发消息或调用 DELETE /api/v1/uploads/{id} 主动回收（已附着则 409 UPLOAD_IN_USE）；(6) 图片气泡渲染：带 Authorization 头 fetch attachment.url 拿 bytes → URL.createObjectURL(blob) → img.src，组件卸载时 revokeObjectURL；CSP 的 img-src 已放行 blob:。禁止直接把 attachment.url 填进 <img src>，那会 401。"
+      "diff": "v0.1 拟 body {clientMsgId,type,body:{text}} 且统一 201；v0.2 为 {clientMsgId,type?,content?,attachmentId?} 且 200/201 双码。v0.3.0 起彻底改为多附件：删除单数 attachmentId 与 type 字段（服务端按附件 kind 推导 type），新增 attachmentIds（1..9、唯一、视频最多 1 个）与 replyToMsgId；content 在带附件时必填非空白。上传物已被其它消息/帖子引用 → 409 UPLOAD_IN_USE；附件数量超限 → 400 ATTACHMENT_LIMIT。业务上限：图片/文件单个 10 MiB，视频单个 100 MiB。",
+      "frontendContract": "【幂等纪律】(1) 重试必须复用原 clientMsgId、原正文、原 attachmentIds 集合与原 replyToMsgId，绝不能每次重试生成新 id；(2) 同 id 换会话或换内容/换附件集合/换引用目标返回 409 IDEMPOTENCY_CONFLICT，属前端缺陷；(3) REST 返回与 WS message.created 可能先后交错，两条路径都必须经同一套去重（按 msgId + clientMsgId）；(4) 发送走 REST，不存在 WS 发消息 ack 帧；(5) 附件消息流程：逐个 POST /api/v1/uploads 拿 id（可并发），再一次性带 attachmentIds 发消息；上传成功但发消息失败时附件成为孤儿，可重试发消息或 DELETE /api/v1/uploads/{id} 回收（已附着则 409 UPLOAD_IN_USE）；(6) 图片/视频气泡渲染：带 Authorization 头 fetch attachment.url 取 bytes → URL.createObjectURL(blob) → img/video.src，组件卸载时 revokeObjectURL；CSP 的 img-src 已放行 blob:，media-src 已放行 blob:。禁止直接把 attachment.url 填进 src，那会 401；(7) 撤回后服务端广播 message.updated，前端以 recalled/recalledAt 覆盖本地消息并清空附件。"
+    },
+    {
+      "id": "M3",
+      "method": "POST",
+      "path": "/api/v1/conversations/{conversationId}/messages/{msgId}/recall",
+      "required": true,
+      "success": 200,
+      "summary": "撤回自己发送的消息（时限 120 秒）。成功后广播 message.updated；撤回后 content 为空串、attachments 为 []，已置顶记录同样脱敏。",
+      "pathParams": [
+        {
+          "name": "conversationId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "msgId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Message"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "RECALL_WINDOW_EXPIRED",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。仅发送者本人可撤回，超过 120 秒回 403 RECALL_WINDOW_EXPIRED「超过撤回时限」；非本人回 403 FORBIDDEN「只能撤回自己的消息」；消息不存在或不属于该会话回 404 NOT_FOUND。已撤回的消息重复撤回幂等返回当前消息（200），不报错也不再广播。",
+      "frontendContract": "【撤回】(1) 只有 senderId===me 且 createdAt 在 120 秒内才显示撤回入口，服务端会二次校验；(2) 成功后不要本地直接改消息，等 REST 响应或 WS message.updated 覆盖，两者幂等；(3) 撤回后附件被释放（可从服务端删除），前端必须同步清空本地附件缓存与 blob URL；(4) RECALL_WINDOW_EXPIRED 时提示「超过撤回时限」并把入口置灰。"
     },
     {
       "id": "U4",
@@ -1965,6 +2372,398 @@
       ],
       "diff": "新增端点。用于「上传成功但消息没发出去」时的主动回收；已附着附件不允许删除（409），避免消息里出现坏链。",
       "frontendContract": "发送失败或用户取消时调用本端点回收附件。已附着返回 409 UPLOAD_IN_USE —— 这不是错误而是「已经被消息用掉了」，前端静默忽略即可。删除成功返回 204 无正文。"
+    },
+    {
+      "id": "Q1",
+      "method": "GET",
+      "path": "/api/v1/posts",
+      "required": true,
+      "success": 200,
+      "summary": "广场帖子流（游标分页，created_at DESC，只含 status=active）。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "不透明游标；首屏不传。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 20
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/PostPage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "INVALID_CURSOR",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。分页为游标式 {items,nextCursor}（不是 {items,nextOffset}）：cursor 不透明，前端必须原样回传，禁止自行拼装。",
+      "frontendContract": "【广场列表】(1) 首屏不传 cursor，limit 默认 20；(2) 下拉刷新时丢弃旧 cursor 重新拉第一页；(3) 不要按 likeCount 或 created_at 在前端重排，服务端顺序即契约；(4) likedByMe 用于高亮，点赞后以后端返回的 likeCount 为准。"
+    },
+    {
+      "id": "Q2",
+      "method": "POST",
+      "path": "/api/v1/posts",
+      "required": true,
+      "success": 201,
+      "summary": "发帖（正文 ≤5000 码点，附件 1..9 个图片/视频，不允许通用文件）。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "maxLength": 5000,
+            "description": "正文；可以为空但必须至少带 1 个附件，否则 400 VALIDATION_ERROR；长度按 Unicode 码点计。"
+          },
+          "attachmentIds": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 9,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "description": "必须属于发帖人本人且未被引用；只允许 image/video（含 file 类附件回 400 ATTACHMENT_LIMIT）；视频最多 1 个。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Post"
+      },
+      "responseCodes": [
+        201,
+        400,
+        401,
+        403,
+        409,
+        413,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "ACCOUNT_BANNED",
+        "ATTACHMENT_LIMIT",
+        "INVALID_ATTACHMENT",
+        "UPLOAD_IN_USE",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。限流 30 次/分/用户。正文与附件同时为空 → 400；附件含 file → 400 ATTACHMENT_LIMIT；附件不属于本人 → 400 INVALID_ATTACHMENT；附件已被引用 → 409 UPLOAD_IN_USE。",
+      "frontendContract": "【发帖】(1) 先上传拿 attachmentIds 再发帖；(2) 成功响应即完整 Post，可直接插入列表头部而不必重新拉第一页；(3) 同时广播 WS post.created（载荷 {postId,actorId}），其他在线用户的列表插入需要自行 GET /posts/{postId} 补全；(4) 失败时保留草稿，attachmentIds 可重试复用（未被引用就不算占用）。"
+    },
+    {
+      "id": "Q3",
+      "method": "GET",
+      "path": "/api/v1/posts/{postId}",
+      "required": true,
+      "success": 200,
+      "summary": "单条帖子详情。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Post"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。帖子不存在或 status=deleted → 404 NOT_FOUND。",
+      "frontendContract": "【详情】收到 WS post.created 后用它补全；收到 post.deleted 时直接关闭详情并回退列表。"
+    },
+    {
+      "id": "Q4",
+      "method": "DELETE",
+      "path": "/api/v1/posts/{postId}",
+      "required": true,
+      "success": 204,
+      "summary": "删除帖子（软删，作者本人或管理员）。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": null,
+      "responseCodes": [
+        204,
+        400,
+        401,
+        403,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。非作者且非管理员 → 403 FORBIDDEN；不存在或已删 → 404 NOT_FOUND。删除是软删（status=deleted），计数与列表同时生效。",
+      "frontendContract": "【删帖】成功后广播 WS post.deleted {postId,actorId}，所有端从列表移除；不要依赖 204 响应体。"
+    },
+    {
+      "id": "Q5",
+      "method": "POST",
+      "path": "/api/v1/posts/{postId}/like",
+      "required": true,
+      "success": 200,
+      "summary": "点赞（幂等）。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/PostLikeResult"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。帖子必须 active，否则 404；重复点赞不报错。限流 60 次/分/用户。",
+      "frontendContract": "【点赞】以响应里的 likeCount 覆盖本地值，不要本地 +1 后再对齐（并发会跳）。"
+    },
+    {
+      "id": "Q6",
+      "method": "DELETE",
+      "path": "/api/v1/posts/{postId}/like",
+      "required": true,
+      "success": 200,
+      "summary": "取消点赞（幂等）。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/PostLikeResult"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。返回 liked=false 与操作后的真实 likeCount；重复取消不报错。",
+      "frontendContract": "【取消点赞】同 Q5，以后端 likeCount 为准。"
+    },
+    {
+      "id": "Q7",
+      "method": "GET",
+      "path": "/api/v1/posts/{postId}/comments",
+      "required": true,
+      "success": 200,
+      "summary": "帖子评论列表（游标分页，created_at ASC 楼层顺序）。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": {
+        "type": "object",
+        "properties": {
+          "cursor": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "不透明游标；首屏不传。"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 20
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/PostCommentPage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "INVALID_CURSOR",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。只返回 status=active 的评论；帖子不存在或已删 → 404。排序与广场相反（ASC），游标不能与帖子列表混用。",
+      "frontendContract": "【评论列表】replyToAuthorName 为 null 表示顶层评论；父评论已删时也返回 null，前端按「原评论已删除」渲染。"
+    },
+    {
+      "id": "Q8",
+      "method": "POST",
+      "path": "/api/v1/posts/{postId}/comments",
+      "required": true,
+      "success": 201,
+      "summary": "发评论（1..1000 码点，可回复某条评论）。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000,
+            "description": "评论正文；长度按 Unicode 码点计，前后空白被 trim，全空白 → 400 VALIDATION_ERROR。"
+          },
+          "replyToId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "被回复评论 id，必须存在且属于同一帖子，否则 400 VALIDATION_ERROR「引用的评论不存在」。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/PostComment"
+      },
+      "responseCodes": [
+        201,
+        400,
+        401,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。限流 30 次/分/用户；帖子必须 active，否则 404。",
+      "frontendContract": "【发评论】成功响应即完整 PostComment（含 replyToAuthorName），可直接追加到列表尾部；同时广播 WS post.commented。"
+    },
+    {
+      "id": "Q9",
+      "method": "DELETE",
+      "path": "/api/v1/posts/{postId}/comments/{commentId}",
+      "required": true,
+      "success": 204,
+      "summary": "删除评论（软删，作者本人或管理员）。",
+      "pathParams": [
+        {
+          "name": "postId",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "commentId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": null,
+      "responseCodes": [
+        204,
+        400,
+        401,
+        403,
+        404,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED",
+        "FORBIDDEN",
+        "NOT_FOUND",
+        "RATE_LIMITED"
+      ],
+      "diff": "v0.3.0 新增。非作者且非管理员 → 403；评论不存在或已删 → 404；删除后帖子 commentCount 由服务端重算。",
+      "frontendContract": "【删评论】成功后本地移除并把 commentCount 以服务端为准（列表刷新或 post.commented 后的重取结果）。"
     },
     {
       "id": "C9",
@@ -2405,14 +3204,6 @@
   ],
   "deferredEndpoints": [
     {
-      "id": "X1",
-      "method": "GET",
-      "path": "/api/v1/users/{userId}",
-      "status": "deferred",
-      "purpose": "用户资料卡（群成员点开、单聊对方资料页）",
-      "frontendFallback": "暂用 GET /users?q=<username> 精确匹配代替；群成员资料卡只展示成员列表已有字段。"
-    },
-    {
       "id": "X2",
       "method": "DELETE",
       "path": "/api/v1/friends/{userId}",
@@ -2448,13 +3239,16 @@
       "note": "开发期靠 Vite 代理消掉跨域（/api、/ws、/health 三条），CORS 只作直连备用；后端已实现 ORIGIN_FORBIDDEN。"
     },
     "wsOriginCheck": "服务端必须校验 Origin 头（WebSocket 不受 CORS 约束，这是 WS 的 CSRF 面）",
-    "csp": "default-src 'self'; connect-src 'self' ws: wss: —— 防 XSS 窃取 localStorage 中的 opaque token",
+    "csp": "default-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob: https:; media-src 'self' blob:; font-src 'self'; connect-src 'self' ws: wss: —— 防 XSS 窃取 localStorage 中的 opaque token；blob:/https: 供附件与视频渲染",
     "rateLimits": {
       "POST /api/v1/auth/register": "10 次/分/IP",
       "POST /api/v1/auth/login": "10 次/分/IP",
       "普通请求": "200 次/分/用户",
       "POST .../messages": "60 次/分/用户",
-      "WS": "每连接 30 帧/10 秒；单帧 ≤4 KiB；积压 >1 MiB 断开；每用户最多 5 条连接"
+      "WS": "每连接 30 帧/10 秒；单帧 ≤4 KiB；积压 >1 MiB 断开；每用户最多 5 条连接",
+      "POST /api/v1/posts": "30 次/分/用户",
+      "POST /api/v1/posts/{postId}/comments": "30 次/分/用户",
+      "POST|DELETE /api/v1/posts/{postId}/like": "60 次/分/用户"
     },
     "limits": {
       "messageContent": 4000,
@@ -2463,7 +3257,12 @@
       "groupName": 60,
       "groupMembers": 100,
       "requestNote": 200,
-      "httpBody": "32 KiB"
+      "httpBody": "64 KiB（JSON）；上传二进制传输层上限约 101 MiB，业务上限由服务端按 mimeType 判定",
+      "postContent": 5000,
+      "commentContent": 1000,
+      "attachmentsPerMessage": 9,
+      "videosPerMessage": 1,
+      "attachmentPerUpload": "图片/文件 10 MiB，视频 100 MiB"
     }
   }
 }

@@ -187,7 +187,10 @@ async function main() {
     await ctx.close()
   }
 
-  /* ── 手机：MobileNav .sheet ────────────────────────────────── */
+  /* ── 手机：MobileNav → ProfileSheet ───────────────────────── */
+  /* v2 需求 1：「更多」面板已被「个人信息」上拉抽屉取代。
+     选择器 .sheet → .psheet、.sheet__cancel → .psheet__close；
+     焦点契约本身不变（同一份 utils/dialogA11y 判定）。 */
   {
     const ctx = await browser.newContext({
       viewport: { width: 390, height: 844 },
@@ -199,53 +202,53 @@ async function main() {
     await setAuth(page, cred)
     await page.waitForSelector('.mnav__tab', { timeout: 20_000 })
 
-    const moreBtn = page.locator('.mnav__tab').nth(2)
-    await moreBtn.click()
-    await page.waitForSelector('.sheet', { timeout: 10_000 })
+    const profileBtn = page.locator('.mnav__tab').nth(2)
+    await profileBtn.click()
+    await page.waitForSelector('.psheet', { timeout: 10_000 })
     await page.waitForTimeout(350)
-    check('手机「更多」面板可打开', await page.locator('.sheet').isVisible())
+    check('手机「个人信息」面板可打开', await page.locator('.psheet').isVisible())
 
     // 打开瞬间应把焦点移入面板（与 AppModal 同一策略）
-    const sheetOpen = await insideOf(page, '.sheet')
+    const sheetOpen = await insideOf(page, '.psheet')
     check('手机面板打开时焦点进入面板', sheetOpen.inside, `焦点=${sheetOpen.tag}/${sheetOpen.label}`)
 
     await page.keyboard.press('Escape')
     await page.waitForTimeout(300)
-    const escClosed = await until(async () => (await page.locator('.sheet').count()) === 0)
-    check('手机「更多」面板 Esc 可关闭', escClosed,
-      escClosed ? '' : '按 Esc 后面板仍在（MobileNav 未处理 keydown）')
+    const escClosed = await until(async () => (await page.locator('.psheet').count()) === 0)
+    check('手机「个人信息」面板 Esc 可关闭', escClosed,
+      escClosed ? '' : '按 Esc 后面板仍在（ProfileSheet 未处理 keydown）')
 
-    // 焦点是否归还到「更多」按钮（点开它的那个 tab）
+    // 焦点是否归还到「个人信息」按钮（点开它的那个 tab）
     const backTo = await activeInfo(page)
-    check('手机面板 Esc 关闭后焦点归还「更多」按钮', backTo.label === '更多' || backTo.cls.includes('mnav__tab'),
+    check('手机面板 Esc 关闭后焦点归还「个人信息」按钮', backTo.label === '个人信息' || backTo.cls.includes('mnav__tab'),
       `焦点=${backTo.tag}/${backTo.label} cls=${backTo.cls}`)
 
     for (const [label, keyName, idx] of [
       ['Tab', 'Tab', -1],
       ['Shift+Tab', 'Shift+Tab', 0],
     ]) {
-      await moreBtn.click()
-      await page.waitForSelector('.sheet', { timeout: 10_000 })
+      await profileBtn.click()
+      await page.waitForSelector('.psheet', { timeout: 10_000 })
       await page.waitForTimeout(300)
-      await focusNth(page, '.sheet', idx)
+      await focusNth(page, '.psheet', idx)
       await page.keyboard.press(keyName)
       await page.waitForTimeout(150)
-      const trapped = await insideOf(page, '.sheet')
+      const trapped = await insideOf(page, '.psheet')
       check(`手机面板 ${label} 焦点不逃逸到 body`, trapped.inside,
         `焦点=${trapped.tag}/${trapped.label}`)
       if (label === 'Tab') await shot(page, 'sheet-trap')
-      // 用「取消」关掉，同时验证既有 PASS 的关闭路径未回归
-      await page.locator('.sheet__cancel').click()
-      const c = await until(async () => (await page.locator('.sheet').count()) === 0)
-      check('手机「更多」面板可关闭（取消，未回归）', c)
+      // 用关闭按钮关掉，同时验证既有 PASS 的关闭路径未回归
+      await page.locator('.psheet__close').click()
+      const c = await until(async () => (await page.locator('.psheet').count()) === 0)
+      check('手机「个人信息」面板可关闭（关闭按钮，未回归）', c)
     }
 
     // 遮罩点击关闭（原有路径，防回归）
-    await moreBtn.click()
-    await page.waitForSelector('.sheet', { timeout: 10_000 })
+    await profileBtn.click()
+    await page.waitForSelector('.psheet', { timeout: 10_000 })
     await page.waitForTimeout(300)
-    await page.mouse.click(195, 60) // 面板在底部，顶部是遮罩
-    const maskClosed = await until(async () => (await page.locator('.sheet').count()) === 0)
+    await page.mouse.click(195, 60) // 面板在底部（62vh），顶部是遮罩
+    const maskClosed = await until(async () => (await page.locator('.psheet').count()) === 0)
     check('手机面板遮罩点击仍可关闭（未回归）', maskClosed)
 
     await ctx.close()

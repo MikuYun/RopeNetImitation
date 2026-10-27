@@ -259,7 +259,8 @@ async function sendTextAs(username, convId, content) {
   const r = await fetch(`${BACKEND}/api/v1/conversations/${convId}/messages`, {
     method: 'POST',
     headers: H(t.token),
-    body: JSON.stringify({ clientMsgId: crypto.randomUUID(), type: 'text', content }),
+    // v2 契约 §2：body 不再接受 type（additionalProperties:false → 传了直接 400）。
+    body: JSON.stringify({ clientMsgId: crypto.randomUUID(), content }),
   })
   return r.ok ? (await r.json()).seq : null
 }
@@ -584,6 +585,8 @@ async function main() {
         `匹配 ${postCount} 次；uploadPosts=${uploadPosts.length}（基线 ${postsBefore}）`,
       )
 
+      // v2 契约 §2：带附件必须附文字，composer 的 canSend 要求 trimmed>0。
+      await pageA.locator('.composer__input').fill('配图：' + photoName)
       await pageA.click('.composer__send')
       const bubbleOk = await until(
         () =>
@@ -720,6 +723,7 @@ async function main() {
         200,
       )
       check('A 侧第二张图上传完成', pendingThumb, thumbName)
+      await pageA.locator('.composer__input').fill('配图：' + thumbName)
       await pageA.click('.composer__send')
 
       const bGot = await until(
@@ -792,6 +796,7 @@ async function main() {
         200,
       )
       check('txt 上传完成：待发送区显示文件名与大小', pendingNote, `${noteName} · ${formatBytes(noteBuf.length)}`)
+      await pageA.locator('.composer__input').fill('文件：' + noteName)
       await pageA.click('.composer__send')
 
       const cardOk = await until(

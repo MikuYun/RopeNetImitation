@@ -26,6 +26,17 @@ export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
  */
 export const UPLOAD_BODY_LIMIT = 11 * 1024 * 1024;
 
+/** 视频业务上限 100 MiB（契约 §3：视频单独一档，图片/普通文件仍 10 MiB）。 */
+export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
+/**
+ * 视频上传的传输层 bodyLimit = 100 MiB + 1 MiB 余量。
+ * 与 UPLOAD_BODY_LIMIT 同理：留 1 MiB 让「100 MiB < size ≤ 101 MiB」走到业务判定，
+ * 由我们回带错误码的 413 UPLOAD_TOO_LARGE，而不是被 fastify 解析层掐断成通用错误。
+ * 路由层按「本次上传声明的 kind」在 UPLOAD_BODY_LIMIT / UPLOAD_BODY_LIMIT_VIDEO 之间选。
+ */
+export const UPLOAD_BODY_LIMIT_VIDEO = MAX_VIDEO_BYTES + 1024 * 1024;
+
 interface Signature {
   mimeType: string;
   test: (bytes: Buffer) => boolean;
@@ -53,6 +64,19 @@ const SIGNATURES: Signature[] = [
   {
     mimeType: 'application/zip',
     test: bytes => bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04,
+  },
+  // v4：视频。ISO BMFF（mp4/m4v/mov 同族）的第二个 box 一定是 'ftyp'，
+  // 偏移 0..4 是 box 长度（大端，可变），因此只校验偏移 4..8 的类型字段。
+  {
+    mimeType: 'video/mp4',
+    test: bytes => bytes.length >= 8 && bytes.subarray(4, 8).toString('latin1') === 'ftyp',
+  },
+  // WebM/Matroska 共用 EBML 头。这里不去解析 DocType：两者都是 <video> 能播的容器，
+  // 统一归到 video/webm 只会影响扩展名（.webm），不会影响安全性或播放能力。
+  {
+    mimeType: 'video/webm',
+    test: bytes => bytes.length >= 4
+      && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3,
   },
 ];
 
@@ -91,6 +115,8 @@ const EXTENSIONS: Record<string, string> = {
   'application/pdf': '.pdf',
   'application/zip': '.zip',
   'text/plain': '.txt',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
 };
 
 export function extensionFor(mimeType: string): string {
@@ -102,10 +128,17 @@ export function uploadPath(dir: string, id: string, mimeType: string): string {
   return join(dir, `${id}${extensionFor(mimeType)}`);
 }
 
-export type UploadKind = 'image' | 'file';
+export type UploadKind = 'image' | 'video' | 'file';
 
 export function kindFor(mimeType: string): UploadKind {
-  return mimeType.startsWith('image/') ? 'image' : 'file';
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('video/')) return 'video';
+  return 'file';
+}
+
+/** 是否为视频（判断依据是服务端嗅探出的 mime，不是客户端声明）。 */
+export function isVideo(mimeType: string): boolean {
+  return mimeType.startsWith('video/');
 }
 
 /**

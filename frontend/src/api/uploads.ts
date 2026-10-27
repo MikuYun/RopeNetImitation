@@ -19,11 +19,20 @@
  * 不新建 axios 实例（否则那两处刚修好的竞态防线会绕过去）。
  */
 import { http } from './http'
-import type { Attachment } from '@/types/domain'
+import type { Attachment, AttachmentKind } from '@/types/domain'
 import type { WireAttachment } from './wire'
 
-/** 与服务端上限一致（10 MiB）；超了这个值后端返回 413，前端提前拦。 */
+/** 图片/普通文件上限（10 MiB，与服务端一致）；超了后端返回 413，前端提前拦。 */
 export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+
+/**
+ * 视频上限（100 MiB）。
+ *
+ * 与 `@/utils/attachments` 的 `MAX_VIDEO_UPLOAD_BYTES` 是同一个数值 —— 这里再导出
+ * 一份是为了让「上传通道自己的上限」与「表单校验的上限」都能就近引用，避免组件
+ * 为了一个常量去 import 校验模块。两处必须同步改。
+ */
+export const UPLOAD_VIDEO_MAX_BYTES = 100 * 1024 * 1024
 
 /** 上传进度的回调形态（axios onUploadProgress 的裁剪版）。 */
 export interface UploadProgress {
@@ -39,13 +48,16 @@ export interface UploadOptions {
   signal?: AbortSignal
 }
 
+/** 上传 201 响应 → 领域 Attachment。kind 只认白名单，其余一律 file。 */
 function toAttachment(a: WireAttachment): Attachment {
+  const kind: AttachmentKind =
+    a.kind === 'image' || a.kind === 'video' ? a.kind : 'file'
   return {
     id: a.id,
     name: a.name,
     mimeType: a.mimeType,
     size: a.size,
-    kind: a.kind === 'image' ? 'image' : 'file',
+    kind,
     url: a.url,
     createdAt: a.createdAt,
   }

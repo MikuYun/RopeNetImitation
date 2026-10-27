@@ -14,16 +14,16 @@ v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.
 |---|---|---|
 | 契约机械校验 | `node scripts/check-contract.mjs` | **ERROR 0 / WARN 0**，`✅ 无差异`；openapi `0.3.0`、39 path / 49 operation |
 | 后端类型 | `node node_modules/typescript/bin/tsc --noEmit` | EXIT 0 |
-| 后端单测 | `node --experimental-strip-types --test test/*.test.ts` | **55/55 pass / 0 fail**（7 文件，含新增 `v2.test.ts`、`db-migration.test.ts`） |
+| 后端单测 | `node --experimental-strip-types --test test/*.test.ts` | **64/64 pass / 0 fail**（8 文件，含新增 `v2.test.ts`、`db-migration.test.ts`、`seed-user.test.ts`） |
 | 前端类型 | `npm run typecheck` | `vue-tsc --noEmit` 0 error |
 | 前端单测 | `npm test` | 14 files / **303 tests** 全绿 |
 | 生产构建 | `npm run build` | exit 0，`✓ built in 1.04s` + `strip-mock-worker.mjs` 校验通过 |
-| e2e 六项需求 | `node e2e-v2.mjs` | **61 项：PASS 60 / FAIL 0 / DEFECT 0 / SKIP 1** |
+| e2e 六项需求（+ 需求 8） | `node e2e-v2.mjs` | **63 项：PASS 63 / FAIL 0 / DEFECT 0 / SKIP 0** |
 | e2e 附件 / UX P0 / 矩阵 / 门禁 / 响应式 | 各自脚本 | 38/38、50/50、93/93、13 通过 0 失败 1 待验、117 断言 0 失败 |
 | 对话框无障碍 | `node scripts/verify-dialog-a11y.mjs` | 15/15 |
-| 需求 5 清库 | `backend/scripts/reset-db.mjs` 在真实库副本上 | 清 16 张业务表 → `users=1` → 重启 → `root/12345678` 登录 **200** |
+| 需求 5 + 需求 8 清库 | `backend/scripts/reset-db.mjs` 在隔离库上 | 清 15 张业务表 → 重建两个初始账号 → 重启 → `root/12345678` 与 `QJQ/A454545asd@` 均登录 **200** |
 
-`e2e-v2` 的 1 项 SKIP 是预期的（`gate_a` 未设头像，首字母兜底属正常）。
+`e2e-v2` 现已 **0 项 SKIP**：原先「`gate_a` 未设头像 → 首字母兜底」的逃逸已去掉——脚本现在会先真实上传一张 PNG 并设成 `gate_a` 头像，无条件断言左上角渲染出 `<img class="avatar-img">`。这正是需求 1 的原始 bug（rail 头像不传 `src` 只显示首字母），不能靠 SKIP 放过。
 
 ### v2 六项需求状态
 

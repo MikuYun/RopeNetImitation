@@ -410,6 +410,20 @@ async function main() {
   const uidB = meB.body?.uid
   console.log(`会话 AB=${convAB}  B.uid=${uidB}\n`)
 
+  /*
+   * 给 gate_a 设一个真实的站内头像（需求 1 的核心 bug 是「rail 头像不传 src，
+   * 永远只显示首字母」）。不设头像的话下面那条断言只能 SKIP —— 而 SKIP 意味着
+   * 「抽屉外头像显示真实图片」这个**最该被证伪的回归点**没被覆盖。
+   * 走真实链路：上传 PNG → PATCH /users/me 的 avatarUrl。
+   */
+  const avatarUp = await uploadBytesAs('gate_a', `v2-avatar-${RUN}.png`, makePng(96, 96, 7), 'image/png')
+  const avatarSet = avatarUp.status === 200 || avatarUp.status === 201
+    ? await jpatch('/api/v1/users/me', (await tokenOf('gate_a')).token, {
+        avatarUrl: `/api/v1/uploads/${avatarUp.body?.id}`,
+      })
+    : { status: avatarUp.status, body: null }
+  console.log(`gate_a 头像：upload=${avatarUp.status} patch=${avatarSet.status} url=${avatarSet.body?.avatarUrl ?? '(失败)'}\n`)
+
   const browser = await chromium.launch({ channel: 'chrome', headless: true })
   const createdPostIds = []
 
@@ -468,18 +482,19 @@ async function main() {
         (await railAvatar.getAttribute('aria-haspopup')) === 'dialog',
       `count=${await railAvatar.count()} haspopup=${await railAvatar.getAttribute('aria-haspopup')}`,
     )
-    // 需求 1 的原始 bug：rail 头像不传 src（只显示首字母）。这里断言头像里确有 <img> 或至少 src 已接线。
+    // 需求 1 的原始 bug：rail 头像不传 src（只显示首字母）。这里断言头像里确有 <img>。
+    // 上面已给 gate_a 上传并设置过站内头像，所以这条不该再走 SKIP 分支；
+    // 若仍无 <img>，说明「头像接线」这个需求 1 的核心缺陷回归了 → 记为产品缺陷。
     const avatarHasImg = await desk
       .locator('.rail__avatar img.avatar-img')
       .count()
       .catch(() => 0)
     const avatarImgVisible = avatarHasImg > 0 ? await desk.locator('.rail__avatar img.avatar-img').first().isVisible().catch(() => false) : false
-    if (avatarHasImg === 0) {
-      // gate_a 没设过头像 → 首字母兜底是正确行为，不能算缺陷；只记 SKIP
-      skip('抽屉外头像显示真实图片', 'gate_a 未设置头像，首字母兜底符合预期')
-    } else {
-      checkProduct('抽屉外头像显示真实图片', avatarImgVisible, `img 可见=${avatarImgVisible}`)
-    }
+    checkProduct(
+      '抽屉外头像显示真实图片（需求 1 的原始 bug）',
+      avatarHasImg > 0 && avatarImgVisible,
+      `img=${avatarHasImg} 可见=${avatarImgVisible}`,
+    )
 
     checkProduct(
       '侧栏底部不再有主题/退出按钮',
@@ -811,9 +826,22 @@ async function main() {
      * 需求 2：点对方头像进访客资料页
      * ══════════════════════════════════════════════════════════════ */
     group('需求 2：点对方头像 → 访客资料页')
+    // 前置：gate_b 必须**真的**发过一条消息，gate_a 才可能看到「对方气泡」。
+    // 之前这里隐含依赖「同一隔离库里上一轮 e2e 遗留的 gate_b 消息」——换新库后
+    // 一条对方消息都没有，`.line__avatar-btn` 自然是 0，会被误判成产品缺陷。
+    const peerLine = `需求2 对方气泡 ${RUN}`
+    const peerSeq = await sendTextAs('gate_b', convAB, peerLine)
+    checkProduct('前置：gate_b 已发出消息', peerSeq !== null, `seq=${peerSeq}`)
     await desk.goto(`${BASE}/chat`, { waitUntil: 'domcontentloaded' })
     await ensureShell(desk, 'gate_a')
     await openConv(desk, '闸门 B')
+    const peerBubbleShown = await until(
+      async () =>
+        (await desk.locator('.bubble').filter({ hasText: peerLine }).count()) > 0,
+      20_000,
+      250,
+    )
+    checkProduct('前置：对方气泡已渲染', peerBubbleShown, `文本=${peerLine}`)
     const peerAvatarBtn = desk.locator('.line__avatar-btn').first()
     const hasPeerAvatar = (await peerAvatarBtn.count()) > 0
     checkProduct('对方气泡旁头像可点（存在按钮包裹）', hasPeerAvatar, `count=${await peerAvatarBtn.count()}`)

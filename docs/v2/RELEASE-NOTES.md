@@ -146,7 +146,7 @@ uid 被占时顺延到下一个空号），命中即完全不动；账号锚点�
 | 前端类型 | `npm run typecheck`（`frontend/`） | `vue-tsc --noEmit` **0 error** |
 | 前端单测 | `npm test`（`frontend/`） | **14 files / 303 tests** 全绿 |
 | 生产构建 | `npm run build`（`frontend/`） | exit 0，`✓ built in 1.04s` + `strip-mock-worker.mjs` 校验通过 |
-| e2e 六项需求 | `node e2e-v2.mjs`（`frontend/`） | **61 项：PASS 60 / FAIL 0 / DEFECT 0 / SKIP 1** |
+| e2e 六项需求（+ 需求 8） | `node e2e-v2.mjs`（`frontend/`） | **63 项：PASS 63 / FAIL 0 / DEFECT 0 / SKIP 0** |
 | e2e 附件 | `node e2e-attachment.mjs` | 38/38 |
 | e2e UX P0 | `node e2e-ux2-p0.mjs` | 50/50 |
 | e2e 矩阵 | `node e2e-matrix.mjs` | 93/93 |

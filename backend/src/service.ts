@@ -611,7 +611,8 @@ export class ChatService {
    *
    * 与 v1 的差异：
    * - 附件从单个 attachmentId 变成 attachmentIds 数组（≤9，可图文混排）；
-   * - content 规则反转：**带附件时必须附带文字**（v1 是允许空 content）；
+   * - content 规则：附件消息允许**空正文**（纯图片/纯文件可单独发送），
+   *   只有「无附件且无文字」被拒绝；
    * - 支持 replyToMsgId 引用回复；
    * - 幂等比较覆盖附件集合与引用目标（v1 只比单个 attachment）。
    */
@@ -629,10 +630,13 @@ export class ChatService {
     if (sender.status === 'banned') return fail(403, 'ACCOUNT_BANNED', '账号已被禁用，请联系管理员');
     const attachments = this.resolveAttachments(userId, attachmentIds, 'chat');
     const normalizedContent = (content ?? '').trim();
-    // 契约 §2 硬规则：带附件时**必须**有文字。否则一条只有图片没有上下文的消息无法在列表/通知里被摘要。
-    if (attachments.length > 0 && normalizedContent === '') {
-      return fail(400, 'VALIDATION_ERROR', '发送附件时必须附带文字');
-    }
+    // content 规则：**附件消息允许空正文**（纯图片/纯文件消息是合法的一等公民），
+    // 但「既没有附件也没有文字」仍然拒绝 —— 那是一条没有任何内容的消息。
+    //
+    // v2 早期版本要求「带附件必须带文字」，初衷是让会话列表/通知有摘要可显示，
+    // 但这条规则把「只想发一张图」这种最常用的操作堵死了。摘要问题改由读取侧兜底：
+    // 会话列表的 `lastMessage`、引用条 preview、通知文案都在 content 为空时退回附件文案
+    // （见 `attachmentsPreviewText` 与 `service.ts` 的 preview 兜底），不需要在写入侧强加约束。
     if (attachments.length === 0 && normalizedContent === '') {
       return fail(400, 'VALIDATION_ERROR', '消息内容不能为空');
     }

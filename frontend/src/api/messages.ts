@@ -4,7 +4,7 @@
  * 后端分页响应为 {items, hasMore, nextBeforeSeq, nextAfterSeq}；
  * 游标仍是 seq，语义与需求书等价。
  */
-import { http } from './http'
+import { http, toApiError } from './http'
 import { toWireMessage } from './normalize'
 import type { WireMessage, WireMessagePage, WireSyncItem } from './wire'
 import type { WireMessage as DomainWireMessage } from '@/types/domain'
@@ -45,9 +45,9 @@ export async function fetchMessages(
  * 多传一个字段就是 400 VALIDATION_ERROR。因此组 body 时需要逐字段判断，
  * 而不是把 input 直接丢给 axios。
  *
- * 【content 空串必须省略】后端 schema 是 `content?: String(minLength 1, maxLength 4000)`：
- * 传 `''` 会因 minLength 1 被拒。纯附件消息（无文字）在 v2 下本来也发不出去
- * （产品要求「附件必须配文字」），所以省略是正确行为而不是降级。
+ * 【content 空串必须省略】后端没有 minLength，但传 `''` 与省略在语义上没区别，
+ * 省略能少一个字段、少一次「空串算不算有内容」的歧义。纯附件消息（只有图片/文件、
+ * 没有正文）是合法的发送方式，此时 content 直接不出现即可。
  *
  * 【attachmentIds】1..9，unique；video ≤1、image ≤9、合计 ≤9。
  * 这些组合规则前端也要先拦（见 utils/attachments.ts#checkAttachmentSelection），
@@ -82,17 +82,38 @@ function toSendBody(input: SendMessageInput): Record<string, unknown> {
  * 可能抛的业务错：
  *   - 409 `UPLOAD_IN_USE`：附件已被别的消息引用（选中的图同时被另一个窗口发了）
  *   - 400 `ATTACHMENT_LIMIT`：附件组合超限
- *   - 400 `VALIDATION_ERROR`：有附件但 content 为空
+ *   - 400 `VALIDATION_ERROR`：既没有文字也没有附件
+ *
+ * 【超时与重发】这里**不用**全局 20 秒超时。带附件的消息在服务端要走事务
+ * （占位检查 + 插入消息 + 插入附件关联），慢网下 20 秒不够，超时后前端已经
+ * 弹出「发送失败」，可服务端其实落库成功了 —— 用户看到的失败是假的。
+ * 所以单独放宽到 60 秒，并且对「一个字节响应都没收到」（status 0）的情况
+ * **自动重发一次**：后端按 `(senderId, clientMsgId)` 幂等，重发要么拿到
+ * 200 原消息、要么补上真正没送达的那次，不会产生重复消息。
  */
+const SEND_TIMEOUT_MS = 60_000
+const SEND_RETRY_DELAY_MS = 600
+
 export async function sendMessage(
   conversationId: string,
   input: SendMessageInput,
 ): Promise<DomainWireMessage> {
-  const { data } = await http.post<WireMessage>(
-    `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
-    toSendBody(input),
-  )
-  return toWireMessage(data)
+  const url = `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`
+  const body = toSendBody(input)
+  const post = (): Promise<DomainWireMessage> =>
+    http
+      .post<WireMessage>(url, body, { timeout: SEND_TIMEOUT_MS })
+      .then(({ data }) => toWireMessage(data))
+
+  try {
+    return await post()
+  } catch (e) {
+    // status 0 = 连接被拒/断开/客户端超时，请求是否到达服务端未知。
+    // 只有这一类值得重发：4xx/5xx 都有确定的语义，重发只是重复失败。
+    if (toApiError(e).status !== 0) throw e
+    await new Promise((resolve) => setTimeout(resolve, SEND_RETRY_DELAY_MS))
+    return post()
+  }
 }
 
 /**

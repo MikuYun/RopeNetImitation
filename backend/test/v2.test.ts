@@ -130,28 +130,41 @@ test('v2 消息：多附件（2 图 + 文字）按数组顺序返回，type 推�
   assert.equal(conflict.json().error.code, 'IDEMPOTENCY_CONFLICT');
 });
 
-test('v2 消息：有附件但没文字 → 400「发送附件时必须附带文字」；纯空白同样拒绝', async context => {
+test('v2 消息：有附件没文字 → 201（纯附件消息）；既无附件也无文字 → 400', async context => {
   const { backend } = await fixture(context);
   const alice = await register(backend, 'alice');
   const bob = await register(backend, 'bob');
   const conversationId = await direct(backend, alice, bob);
   const image = await upload(backend, alice.token, PNG, 'only.png');
 
+  // 只有图片、完全没有 content 字段：合法。这是「单独发一张图」的正常路径。
   const missing = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token, {
     clientMsgId: randomUUID(),
     attachmentIds: [image.id],
   });
-  assert.equal(missing.statusCode, 400, missing.body);
-  assert.equal(missing.json().error.code, 'VALIDATION_ERROR');
-  assert.equal(missing.json().error.message, '发送附件时必须附带文字');
+  assert.equal(missing.statusCode, 201, missing.body);
+  assert.equal(missing.json().content, '');
+  assert.equal(missing.json().type, 'image');
+  assert.equal(missing.json().attachments.length, 1);
+  assert.equal(missing.json().recalled, false);
 
+  // content 是纯空白：trim 后视同「没写正文」，同样允许。
+  const blankImage = await upload(backend, alice.token, PNG, 'blank.png');
   const blank = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token, {
     clientMsgId: randomUUID(),
     content: '   ',
-    attachmentIds: [image.id],
+    attachmentIds: [blankImage.id],
   });
-  assert.equal(blank.statusCode, 400, blank.body);
-  assert.equal(blank.json().error.code, 'VALIDATION_ERROR');
+  assert.equal(blank.statusCode, 201, blank.body);
+  assert.equal(blank.json().content, '');
+
+  // 回读历史：空正文的消息必须能被正常分页取到，不能因为 content 为空被过滤。
+  const history = await call(backend, 'GET',
+    `/api/v1/conversations/${conversationId}/messages?limit=50`, alice.token);
+  assert.equal(history.statusCode, 200, history.body);
+  const listed = history.json().items.find((item: { msgId: string }) => item.msgId === missing.json().msgId);
+  assert.ok(listed, '空正文的附件消息应出现在历史里');
+  assert.equal(listed.content, '');
 
   // 无附件且无内容 → 同样 400（兜底文案不同）。
   const empty = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token, {

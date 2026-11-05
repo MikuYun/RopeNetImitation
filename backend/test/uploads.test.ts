@@ -174,7 +174,7 @@ test('附件消息：type 由服务端推导、历史与 sync 可见、不可复
   assert.equal(created.statusCode, 201, created.body);
   const uploadId = created.json().id;
 
-  // v2：发送附件用 attachmentIds 数组，且**必须带非空文字**（产品要求）。
+  // v2：发送附件用 attachmentIds 数组；正文与附件可并存，也可只有附件。
   const sent = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
     { clientMsgId: randomUUID(), content: '看这张图', attachmentIds: [uploadId] });
   assert.equal(sent.statusCode, 201, sent.body);
@@ -195,12 +195,21 @@ test('附件消息：type 由服务端推导、历史与 sync 可见、不可复
   assert.equal(message.recalledAt, null);
   assert.equal(message.replyTo, null);
 
-  // 有附件但没有文字 → 400，且文案固定（前端直接展示）。
+  // 只有附件、没有文字 → **允许**（纯图片消息是一等公民），content 落库为空串。
+  const lone = await upload(backend, alice.token, PNG, { filename: '纯图.png' });
   const noText = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
-    { clientMsgId: randomUUID(), attachmentIds: [uploadId] });
-  assert.equal(noText.statusCode, 400, noText.body);
-  assert.equal(noText.json().error.code, 'VALIDATION_ERROR');
-  assert.equal(noText.json().error.message, '发送附件时必须附带文字');
+    { clientMsgId: randomUUID(), attachmentIds: [lone.json().id] });
+  assert.equal(noText.statusCode, 201, noText.body);
+  assert.equal(noText.json().content, '');
+  assert.equal(noText.json().type, 'image');
+  assert.equal(noText.json().attachments.length, 1);
+
+  // 既没有附件也没有文字 → 仍然 400（真·空消息）。
+  const empty = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,
+    { clientMsgId: randomUUID() });
+  assert.equal(empty.statusCode, 400, empty.body);
+  assert.equal(empty.json().error.code, 'VALIDATION_ERROR');
+  assert.equal(empty.json().error.message, '消息内容不能为空');
 
   // 同一 clientMsgId 重试：幂等返回同一条，且仍带 attachments。
   const retried = await call(backend, 'POST', `/api/v1/conversations/${conversationId}/messages`, alice.token,

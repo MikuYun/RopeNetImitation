@@ -70,9 +70,9 @@ interface ReplyRef { msgId: string; senderId: string; senderName: string; previe
   { "clientMsgId": "uuid", "content": "可选文本", "attachmentIds": ["uuid", "..."], "replyToMsgId": "uuid|null" }
   ```
   - `attachmentIds`：1..9，unique；其中 `video` 最多 1 个，`image` 最多 9 个，合计 ≤9。
-  - **有附件时必须带非空 `content`**（产品需求：图片/文件必须配文字）；否则 400
-    `VALIDATION_ERROR`「发送附件时必须附带文字」。
-  - 无附件时 `content` 非空且 ≤4000 字。
+  - `content` 与附件**互不依赖**：可以只发图片/文件（`content` 省略或为空），
+    也可以图文同条，但不能两者都没有（否则 400 `VALIDATION_ERROR`「消息内容不能为空」）。
+  - 有 `content` 时 trim 后 ≤4000 字；纯空白视同没写正文。
   - 已被别的消息引用的附件 → 409 `UPLOAD_IN_USE`。
 - 撤回：`POST /api/v1/conversations/:id/messages/:msgId/recall` → 200 `Message`
   - 仅作者本人，且 `createdAt` 距现在 ≤ 120 秒，否则 403 `RECALL_WINDOW_EXPIRED`。

@@ -2163,7 +2163,7 @@
           "content": {
             "type": "string",
             "maxLength": 4000,
-            "description": "正文。带附件时必填且不能全是空白（否则 400 VALIDATION_ERROR「发送附件时必须附带文字」），长度按 Unicode 码点计最多 4000；纯文本消息同样必填非空白。"
+            "description": "正文。与附件互不依赖：可以只发附件不带正文（纯图片/纯文件消息），也可以图文同条；但「既无附件又无正文」返回 400 VALIDATION_ERROR。给了正文时按 Unicode 码点计最多 4000，纯空白视同未给。"
           },
           "attachmentIds": {
             "type": "array",

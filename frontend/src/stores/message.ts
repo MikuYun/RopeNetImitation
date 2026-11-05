@@ -229,14 +229,26 @@ export const useMessageStore = defineStore('message', () => {
     return msg
   }
 
-  /** 标记失败，保留气泡供重试。 */
-  function markFailed(conversationId: string, clientMsgId: string, errorCode?: string): void {
+  /**
+   * 标记失败，保留气泡供重试。**返回是否真的标到了一个待发送消息。**
+   *
+   * 【为什么要有返回值】这个地方曾经藏着一个很气人的假失败：
+   *   1. 请求发出，服务端已落库并推进 seq；
+   *   2. 客户端 axios 先触发 20s 超时（或 WS `message.created` 先到），
+   *      `insertOrIgnore` 已经把这条乐观消息从 `pending` 兑现走了；
+   *   3. 紧接着 catch 里的 `markFailed` 找不到 pending → 静默 return；
+   *   4. 但调用方无条件弹了个「发送失败」toast。
+   * 结果是消息明明发出去了，界面却报失败，用户以为要重发。
+   * 有了返回值，调用方只有在「确实标到失败态」时才弹提示，迟到失败不再误报。
+   */
+  function markFailed(conversationId: string, clientMsgId: string, errorCode?: string): boolean {
     const b = bucketOf(conversationId)
     const p = b.pendingByClientMsgId.get(clientMsgId)
-    if (!p) return
+    if (!p) return false
     if (errorCode !== undefined) p.errorCode = errorCode
     p.status = 'failed'
     buckets.value.set(conversationId, { ...b })
+    return true
   }
 
   /** 重试：复用同一 clientMsgId，靠服务端幂等保证不产生重复。 */

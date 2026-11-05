@@ -58,7 +58,7 @@ export const Message = Type.Object({
     Type.Literal('text'), Type.Literal('system'), Type.Literal('image'),
     Type.Literal('video'), Type.Literal('file'), Type.Literal('mixed'),
   ]),
-  // 可为空串：v2 允许「有附件」的消息带空 content（但发送时要求非空，见 API-V2 §2）。
+  // 可为空串：带附件的消息允许没有正文（纯图片/纯文件消息），读取侧自行兜底摘要。
   content: Type.String(),
   // 恒存在的数组：无附件为 []。v2 用数组替换了 v1 的单数 attachment，
   // 前端读取点不必再判 null，少一个会漏判的分支。
@@ -73,6 +73,7 @@ const AttachmentIds = Type.Array(Id, { minItems: 1, maxItems: 9, uniqueItems: tr
 export const SendMessageBody = Type.Object({
   clientMsgId: Id,
   // 上限 4000 按码点算（与广场 5000 一致）：emoji 不能因为代理对而少算一半额度。
+  // 不设 minLength：附件消息允许只发图/文件不带文字；「无附件且无文字」由 service 拒绝。
   content: Type.Optional(Type.String({ maxLength: 4000 })),
   attachmentIds: Type.Optional(AttachmentIds),
   // 允许显式传 null 表示「不引用」，与省略同义；前端从 state 直接透传时不必做清理。

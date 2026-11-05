@@ -285,7 +285,7 @@ curl.exe -X POST http://127.0.0.1:3001/api/v1/auth/ws-ticket -H "Authorization: 
 | 字段 | 说明 |
 |---|---|
 | `clientMsgId` | 必填，UUID，幂等键 |
-| `content` | 可选，最多 4000 字符；**有附件时必须非空且非纯空白** |
+| `content` | 可选，最多 4000 字符；带附件时可为空（纯图片/纯文件消息），但不能是纯空白；无附件时必须非空白 |
 | `attachmentIds` | 可选，1–9 个且不重复的 UUID；必须是自己上传且尚未被任何消息或帖子使用 |
 | `replyToMsgId` | 可选，UUID 或 null；目标消息必须存在且属于同一会话 |
 
@@ -529,7 +529,7 @@ await fetch(`${base}/conversations/${conversationId}/messages`, {
   headers: { Authorization: `Bearer ${auth.token}`, 'Content-Type': 'application/json' },
   body: JSON.stringify({
     clientMsgId: crypto.randomUUID(),
-    content: '周末拍的照片',                     // 有附件时正文必须非空
+    content: '周末拍的照片',                     // 可省略：只有附件也是一条合法消息
     attachmentIds: [upload.id],
   }),
 });

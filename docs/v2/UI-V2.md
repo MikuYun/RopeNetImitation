@@ -53,7 +53,7 @@
 - 视频/图片 URL 必须经 `fetchObjectUrl` 拿 blob URL（同 `api/uploads.ts` 既有纪律），不得把 token 拼进 URL。
 - 撤回：`recalled=true` 时渲染「XXX 撤回了一条消息」占位，不渲染正文与附件。
 - 引用回复：`replyTo` 非空时气泡顶部渲染引用条（`senderName：preview`，点击滚动定位到原消息）。
-- 输入框：附件必须配文字才能发送；有附件时 Enter 不发送（受控，必须点发送按钮或 Ctrl/⌘+Enter）。
+- 输入框：正文与附件互不依赖 —— 可只发附件、也可图文同条；只有「既无正文又无附件」时按钮 disabled。有附件时 Enter 不发送（防误发，必须点发送按钮或 Ctrl/⌘+Enter）。
 
 ## 6. 图标
 

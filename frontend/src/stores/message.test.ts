@@ -268,3 +268,69 @@ describe('message store upsertMessage（message.updated 覆盖式写入）', () 
     expect(store.messagesOf('c1')[0]?.recalled).toBe(true)
   })
 })
+
+/**
+ * 「发送失败」误报的门禁。
+ *
+ * 真实时序（用户反复遇到的「图片有时发送失败」）：
+ *   1. `sendMessage` 请求已到达服务端并落库；
+ *   2. WS 的 `message.created` 抢先到达 → `insertOrIgnore` 兑现 pending → confirmed；
+ *   3. axios 才因为客户端超时 / 连接抖动抛错。
+ *
+ * 此时 pending 已经不存在了。若 `markFailed` 仍把某条消息标成失败、调用方仍弹
+ * toast，用户看到的就是「图明明发出去了，却提示发送失败」—— 于是去点重试，
+ * 重试又靠 clientMsgId 幂等返回同一条，界面看起来「重试成功」，更让人困惑。
+ *
+ * 所以 `markFailed` 必须**返回是否真的标到了失败态**，调用方据此决定要不要提示。
+ */
+describe('message store markFailed 返回值（发送失败误报的门禁）', () => {
+  it('pending 存在时返回 true，并把状态标成 failed', () => {
+    const store = useMessageStore()
+    const local = store.appendOptimistic({ conversationId: 'c1', senderId: 'u-self', content: 'hi' })
+
+    expect(store.markFailed('c1', local.clientMsgId ?? '', 'NETWORK_ERROR')).toBe(true)
+    const pending = store.pendingOf('c1')
+    expect(pending).toHaveLength(1)
+    expect(pending[0]?.status).toBe('failed')
+    expect(pending[0]?.errorCode).toBe('NETWORK_ERROR')
+  })
+
+  it('已经兑现成 confirmed 之后再 markFailed → 返回 false，且不留下任何失败态', () => {
+    const store = useMessageStore()
+    const local = store.appendOptimistic({ conversationId: 'c1', senderId: 'u-self', content: 'hi' })
+
+    // WS 抢先兑现（这就是误报的起点）
+    store.insertOrIgnore({
+      ...wireMessage(3, 'hi'),
+      msgId: 'srv-3',
+      senderId: 'u-self',
+      clientMsgId: local.clientMsgId,
+    })
+    expect(store.pendingOf('c1')).toHaveLength(0)
+
+    // 迟到的 catch：必须报告「没标到」
+    expect(store.markFailed('c1', local.clientMsgId ?? '', 'NETWORK_ERROR')).toBe(false)
+    expect(store.pendingOf('c1')).toHaveLength(0)
+    // 已兑现的消息仍然是 sent，不能被降级成失败
+    expect(store.messagesOf('c1')).toHaveLength(1)
+    expect(store.messagesOf('c1')[0]?.status).toBe('sent')
+  })
+
+  it('未知 clientMsgId → 返回 false（不凭空造失败态）', () => {
+    const store = useMessageStore()
+    expect(store.markFailed('c1', 'nope', 'NETWORK_ERROR')).toBe(false)
+    expect(store.pendingOf('c1')).toHaveLength(0)
+  })
+
+  it('markRetrying 只在 pending 还在时生效；失败后重试回到 sending 且清掉 errorCode', () => {
+    const store = useMessageStore()
+    const local = store.appendOptimistic({ conversationId: 'c1', senderId: 'u-self', content: 'hi' })
+    const cmid = local.clientMsgId ?? ''
+
+    store.markFailed('c1', cmid, 'NETWORK_ERROR')
+    store.markRetrying('c1', cmid)
+    const pending = store.pendingOf('c1')
+    expect(pending[0]?.status).toBe('sending')
+    expect(pending[0]?.errorCode).toBeUndefined()
+  })
+})

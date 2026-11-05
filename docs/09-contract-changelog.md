@@ -13,7 +13,7 @@
 | v0.2.0 | 2026-09-28 | `0.2.0` | **0** | **0** | **双方对齐**（机械门禁通过；`[ACK]` 留痕见 `session-log.md`） |
 | v0.2.0+uploads | 2026-10-22 | `0.2.0` | **0** | **0** | **增量扩展**（新增 3 个 uploads 端点、Message 增 `attachment`、`type` 增 `image`/`file`；openapi 版本号未 bump，按下方「新增端点/新增可选字段/新增枚举值」三条规则执行） |
 | v0.3.0 | 2026-10-23 | `0.2.0` | **0** | **0** | **增量扩展**（第二轮体验改造：数字 uid、管理员后台、群角色、消息置顶、删除账号与附件可读范围修复；新增 8 个端点、User/Conversation 字段扩充；openapi 版本号仍不 bump） |
-| v0.4.0（v2） | 2026-10-27 | `0.3.0` | **0** | **0** | **破坏性变更**（v2 平台升级：`attachment`→`attachments[]`、消息体不再接 `type`、有附件必须带文字、撤回/引用回复、广场 9 端点、访客资料；`protocolVersion` 1→2；`SCHEMA_VERSION` 3→4。openapi 版本号本轮同步 bump 到 `0.3.0`） |
+| v0.4.0（v2） | 2026-10-27 | `0.3.0` | **0** | **0** | **破坏性变更**（v2 平台升级：`attachment`→`attachments[]`、消息体不再接 `type`、撤回/引用回复、广场 9 端点、访客资料；`protocolVersion` 1→2；`SCHEMA_VERSION` 3→4。openapi 版本号本轮同步 bump 到 `0.3.0`） |
 
 > **v0.4.0（v2）破坏性变更逐条**（详见 `docs/v2/RELEASE-NOTES.md` §2）：
 >

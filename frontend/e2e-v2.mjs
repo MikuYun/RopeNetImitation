@@ -15,7 +15,7 @@
  *   需求2  点别人头像进访客资料页：聊天气泡旁头像、广场动态头像两条入口。
  *   需求3  主题：≥5 套预置 + 1 套自定义（8 个取色器 + 3 种聊天区背景）；
  *          切换后 <html> 的 data-theme/data-theme-mode 正确；自定义刷新后仍在。
- *   需求4  消息附件：多图多文件（≤9，视频≤1）、有附件必须带文字、
+ *   需求4  消息附件：多图多文件（≤9，视频≤1）、可只发附件或图文同条、
  *          带文字发附件时文字不被吞、有附件时 Enter 不发送（Ctrl+Enter 或按钮）。
  *   需求5  管理员初始化：root/12345678 可登录且是 admin；reset-db.mjs 有
  *          --confirm 门禁（**只验负向，不真清库**）。
@@ -716,12 +716,12 @@ async function main() {
     /* ══════════════════════════════════════════════════════════════
      * 需求 4：多附件消息
      * ══════════════════════════════════════════════════════════════ */
-    group('需求 4：多图多文件 / 必带文字 / Enter 规则')
+    group('需求 4：多图多文件 / 可只发附件 / Enter 规则')
     await openConv(desk, '闸门 B')
     checkProduct('进入会话成功', await desk.locator('.pane__scroll').isVisible(), '')
 
-    // 4-a 只有附件没有文字 → 发送按钮 disabled 且提示要求带文字
-    const beforeRows = await rowCount(desk)
+    // 4-a 只有附件没有文字 → 发送按钮**可用**（纯图片消息是一等公民）
+    let beforeRows = await rowCount(desk)
     await pickFiles(desk, '.cbar__btn--image', [paths.a, paths.b])
     const twoReady = await until(
       async () => (await desk.locator('.composer__att--done').count()) === 2,
@@ -731,16 +731,43 @@ async function main() {
     checkProduct('多选两张图片都能进入待发送队列', twoReady, `done=${await desk.locator('.composer__att--done').count()}`)
     const sendBtnNoText = desk.locator('.composer__send')
     checkProduct(
-      '只有附件、没有文字时发送按钮不可用',
-      await sendBtnNoText.isDisabled(),
+      '只有附件、没有文字时发送按钮可用',
+      !(await sendBtnNoText.isDisabled()),
       `disabled=${await sendBtnNoText.isDisabled()} title=${await sendBtnNoText.getAttribute('title')}`,
     )
     const noTextHint = (await sendBtnNoText.getAttribute('title')) ?? ''
     checkProduct(
-      '提示要求附带文字',
-      /附带文字/.test(noTextHint),
+      '提示不再要求附带文字',
+      !/附带文字/.test(noTextHint),
       `title=${noTextHint}`,
     )
+
+    // 4-a2 直接点发送：纯图片消息必须发得出去，气泡里只有图、没有空正文节点
+    await sendBtnNoText.click()
+    const loneSent = await until(async () => (await rowCount(desk)) > beforeRows, 30_000, 250)
+    checkProduct('无文字也能直接把图片发出去', loneSent, `rows ${beforeRows}→${await rowCount(desk)}`)
+    const loneBubble = await desk.evaluate(() => {
+      const bubbles = [...document.querySelectorAll('.bubble')]
+      const last = bubbles.at(-1)
+      if (!last) return null
+      return {
+        atts: last.querySelectorAll('.att').length,
+        imgs: last.querySelectorAll('.att--image').length,
+        hasTextNode: !!last.querySelector('.bubble__text'),
+        failed: !!last.querySelector('.bubble--failed, .bubble__failed'),
+      }
+    })
+    checkProduct(
+      '纯图片消息气泡：2 张图、无正文节点、不是失败态',
+      !!loneBubble && loneBubble.imgs === 2 && !loneBubble.hasTextNode && !loneBubble.failed,
+      JSON.stringify(loneBubble ?? {}),
+    )
+    await shot(desk, 'req4-attachment-only')
+
+    // 重新挑两张图给后面的 Enter / Ctrl+Enter 用例
+    beforeRows = await rowCount(desk)
+    await pickFiles(desk, '.cbar__btn--image', [paths.a, paths.b])
+    await until(async () => (await desk.locator('.composer__att--done').count()) === 2, 60_000, 250)
 
     // 4-b 有附件时按 Enter 不发送（只换行）
     const draftA = `多图${RUN}`
@@ -821,6 +848,108 @@ async function main() {
       `队列=${videoCount}（塞了 2 个 mp4）`,
     )
     await shot(desk, 'req4-video')
+
+    /* ══════════════════════════════════════════════════════════════
+     * 需求 4b：「发送失败」误报回归（需求方反馈「图片有时发送失败」）
+     * ══════════════════════════════════════════════════════════════
+     * 复现的是真实时序，不是伪造：
+     *   1. 请求**真的**打到服务端 → 消息落库 → WS broadcast `message.created`；
+     *   2. 客户端这一侧才收到错误（超时 / 连接重置）。
+     * 旧实现里 catch 无条件弹「发送失败」，于是「图已经发出去、界面却说失败」，
+     * 用户去点重试，重试靠 clientMsgId 幂等返回同一条 —— 越点越困惑。
+     * 修法：toast 的触发权收归 store.markFailed 的返回值（标到了才提示）。
+     */
+    group('需求 4b：「发送失败」误报回归')
+    await desk.reload({ waitUntil: 'domcontentloaded' })
+    await ensureShell(desk, 'gate_a')
+    await openConv(desk, '闸门 B')
+    await desk.evaluate(() => {
+      document.querySelectorAll('.toast').forEach((el) => el.remove())
+    })
+    const ghost = `假失败回归 ${RUN}`
+    await desk.route('**/api/v1/conversations/*/messages', async (route) => {
+      if (route.request().method() !== 'POST') return route.continue()
+      // 放行到服务端：消息一定落库，WS 也会广播。
+      await route.fetch().catch(() => null)
+      // 但让客户端看到错误 —— 这就是用户遇到的「发送失败」。
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ error: { code: 'INTERNAL', message: '注入的发送失败' } }),
+      })
+    })
+    const ghostRowsBefore = await rowCount(desk)
+    await desk.locator('.composer__input').fill(ghost)
+    await desk.locator('.composer__input').press('Enter')
+    await sleep(3_000)
+    const ghostBubble = await desk.evaluate((tag) => {
+      const hit = [...document.querySelectorAll('.bubble')].filter((b) =>
+        (b.textContent || '').includes(tag),
+      )
+      return hit.length
+    }, ghost)
+    checkProduct('消息其实已落库（WS 把气泡补上，没有丢）', ghostBubble > 0, `气泡数=${ghostBubble}`)
+    const ghostToasts = await desk.evaluate(() =>
+      [...document.querySelectorAll('.toast')].map((el) => (el.textContent ?? '').trim()),
+    )
+    const falseAlarm = ghostToasts.filter((t) => t.includes('发送失败'))
+    checkProduct(
+      '迟到的错误不再弹「发送失败」（不误报）',
+      falseAlarm.length === 0,
+      `toasts=${JSON.stringify(ghostToasts)}`,
+    )
+    const ghostRetry = await desk.evaluate(() =>
+      document.querySelectorAll('.pane__retry').length,
+    )
+    checkProduct('那条已落库的消息没有出现「重试」按钮', ghostRetry === 0, `retry 按钮=${ghostRetry}`)
+    await desk.unroute('**/api/v1/conversations/*/messages')
+    await sleep(500)
+    checkProduct('重载后行数只增不减（没有因为失败态被回滚掉）', (await rowCount(desk)) > ghostRowsBefore,
+      `rows ${ghostRowsBefore}→${await rowCount(desk)}`)
+    await shot(desk, 'req4b-false-failure')
+
+    /* 反向门禁：**真正**没发出去时必须如实报错。
+     * 只放行到「客户端根本连不上」，服务端一条都收不到 —— 这次失败是真的。 */
+    await desk.evaluate(() => {
+      document.querySelectorAll('.toast').forEach((el) => el.remove())
+    })
+    const realFail = `真失败 ${RUN}`
+    const realFailRows = await rowCount(desk)
+    await desk.route('**/api/v1/conversations/*/messages', (route) =>
+      route.request().method() === 'POST' ? route.abort('connectionrefused') : route.continue(),
+    )
+    await desk.locator('.composer__input').fill(realFail)
+    await desk.locator('.composer__input').press('Enter')
+    const failedShown = await until(
+      async () => (await desk.locator('.pane__retry').count()) > 0,
+      40_000,
+      250,
+    )
+    checkProduct('真失败时那条消息进入失败态并给出「重试」', failedShown, `retry=${await desk.locator('.pane__retry').count()}`)
+    const realToasts = await desk.evaluate(() =>
+      [...document.querySelectorAll('.toast')].map((el) => (el.textContent ?? '').trim()),
+    )
+    checkProduct(
+      '真失败时如实提示「发送失败」',
+      realToasts.some((t) => t.includes('发送失败')),
+      `toasts=${JSON.stringify(realToasts)}`,
+    )
+    await desk.unroute('**/api/v1/conversations/*/messages')
+    // 收尾：这条真失败的乐观消息留在时间线里，刷新后由服务端历史覆盖掉
+    await desk.reload({ waitUntil: 'domcontentloaded' })
+    await ensureShell(desk, 'gate_a')
+    await openConv(desk, '闸门 B')
+    checkProduct(
+      '刷新后假失败/真失败都不残留（历史以服务端为准）',
+      (await desk.evaluate(
+        (tags) =>
+          tags.filter((t) =>
+            [...document.querySelectorAll('.bubble')].some((b) => (b.textContent || '').includes(t)),
+          ),
+        [realFail],
+      )).length === 0,
+      `真失败消息已不在时间线（服务端无此条）`,
+    )
 
     /* ══════════════════════════════════════════════════════════════
      * 需求 2：点对方头像进访客资料页

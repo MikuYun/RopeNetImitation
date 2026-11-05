@@ -16,9 +16,9 @@ v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.
 | 后端类型 | `node node_modules/typescript/bin/tsc --noEmit` | EXIT 0 |
 | 后端单测 | `node --experimental-strip-types --test test/*.test.ts` | **64/64 pass / 0 fail**（8 文件，含新增 `v2.test.ts`、`db-migration.test.ts`、`seed-user.test.ts`） |
 | 前端类型 | `npm run typecheck` | `vue-tsc --noEmit` 0 error |
-| 前端单测 | `npm test` | 14 files / **303 tests** 全绿 |
+| 前端单测 | `npm test` | 14 files / **307 tests** 全绿（含 4 条「发送失败误报」门禁） |
 | 生产构建 | `npm run build` | exit 0，`✓ built in 1.04s` + `strip-mock-worker.mjs` 校验通过 |
-| e2e 六项需求（+ 需求 8） | `node e2e-v2.mjs` | **63 项：PASS 63 / FAIL 0 / DEFECT 0 / SKIP 0** |
+| e2e 六项需求（+ 需求 8） | `node e2e-v2.mjs` | **69 项：PASS 69 / FAIL 0 / DEFECT 0 / SKIP 0**（含「单独发附件」与「发送失败误报」回归） |
 | e2e 附件 / UX P0 / 矩阵 / 门禁 / 响应式 | 各自脚本 | 38/38、50/50、93/93、13 通过 0 失败 1 待验、117 断言 0 失败 |
 | 对话框无障碍 | `node scripts/verify-dialog-a11y.mjs` | 15/15 |
 | 需求 5 + 需求 8 清库 | `backend/scripts/reset-db.mjs` 在隔离库上 | 清 15 张业务表 → 重建两个初始账号 → 重启 → `root/12345678` 与 `QJQ/A454545asd@` 均登录 **200** |
@@ -38,7 +38,7 @@ v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.
 
 ### v2 带来的破坏性变更（上线必须同版）
 
-- 消息 `attachment` → `attachments[]`；发送体 `attachmentId` → `attachmentIds(1..9)`，且**有附件必须带文字**；
+- 消息 `attachment` → `attachments[]`；发送体 `attachmentId` → `attachmentIds(1..9)`；正文与附件**互不依赖**（可只发附件，2026-11-05 放宽）；
 - `type` 不再接受客户端传入（服务端按附件推导，增 `video`/`mixed`）；
 - `protocolVersion` 1 → 2（信封 `v` 仍为 1，两者不可混用）→ **前后端必须同时上线**；
 - `GET /uploads/:id` 权限放宽为四类（含广场帖引用、头像引用）；

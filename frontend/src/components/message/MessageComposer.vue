@@ -25,15 +25,16 @@
  *    仍在传的不算 —— 否则用户能在图还没传完时点发送，服务端收到空 id。
  *
  * 2) 为什么「有附件时 Enter 不发送」
- *    服务端硬约束：**有附件必须带非空 content**。而用户选完图后第一反应是
- *    直接敲 Enter 发送，此时 content 还是空的 → 必然 400。与其发出去再报错，
- *    不如在 Enter 上直接拦住并让它变成换行，让用户把文字打完。
- *    这也顺势解决了另一种误操作：Enter 发出去的附件消息常常没配文。
+ *    **不是**服务端限制 —— 服务端允许只有图片/文件、没有正文的消息（纯附件消息是
+ *    一等公民）。这里拦 Enter 纯粹是**防误发**：用户选完图后手还在键盘上，
+ *    很容易顺手一个 Enter 把「图 + 半句话」发出去，而附件消息发出去后撤回窗口只有
+ *    120 秒。把 Enter 在「有待发送附件」时降级为换行，用户要发就点按钮或按
+ *    Ctrl/⌘+Enter —— 多一个确认动作，少一批发错的消息。
  *    必须保留的逃生口：Ctrl/⌘+Enter **任何时候**都能发送（含带附件时）。
  *
- * 3) 为什么 canSend 一律要求 trimmed > 0
- *    需求「图片/文件必须配文字」是产品硬要求，不是可降级的体验优化。
- *    因此不能写 `trimmed > 0 || hasAttachment`（那等于把要求废掉）。
+ * 3) canSend 的两个来源
+ *    有正文 **或** 有已就绪的附件都可发送；两者都没有才禁用。上传中的附件不算
+ *    （见上一条），所以 `uploading` 仍然独立阻止发送。
  *    发送按钮的 disabled 只是**提示**，真正拦截在 submit() 里也再判一次。
  *
  * 4) 附件上限
@@ -227,16 +228,21 @@ watch(text, (v) => {
 const trimmed = computed(() => text.value.trim())
 
 /**
- * 能否发送。**有附件也必须有文字**（服务端同样硬约束）。
+ * 能否发送：**有文字或有已就绪的附件**，二者其一即可。
  *
- * 任务书原式：
- *   canSend = (pendingAttachments.length === 0 ? trimmed.length > 0 : trimmed.length > 0)
- *             && !disabled && !uploading
- * 两个分支完全相同 —— 这正是「无论有没有附件都要求 trimmed > 0」的写法。
- * 为可读性直接写成一个条件，语义不变。
+ * 纯图片/纯文件消息是被支持的发送方式（不需要配文字）。只有「一个字都没有、
+ * 也没有任何已上传完成的附件」时才禁用 —— 这种消息服务端会以
+ * 「消息内容不能为空」拒绝，前端先行拦住省一次往返。
+ *
+ * 仍然要求 `!uploading`：只要队列里还有上传中的条目就整体禁用，
+ * 否则用户能点发送而服务端收到的是残缺/空的 attachmentIds。
  */
 const canSend = computed(
-  () => trimmed.value.length > 0 && !props.disabled && !uploading.value && queue.length <= MAX_ATTACHMENTS,
+  () =>
+    (trimmed.value.length > 0 || pendingAttachments.value.length > 0) &&
+    !props.disabled &&
+    !uploading.value &&
+    queue.length <= MAX_ATTACHMENTS,
 )
 
 const overLimit = computed(() => text.value.length > MESSAGE_TEXT_MAX)
@@ -247,11 +253,11 @@ const canPreview = computed(() => trimmed.value.length > 0)
 const placeholder = computed(() => {
   if (props.disabled) return '连接中断，恢复后可继续输入'
   if (hasAttachments.value) {
-    // 有附件时 Enter 不再发送（见文件头第 2 条），提示必须同步改口，
+    // 有附件时 Enter 只换行（见文件头第 2 条），提示必须同步改口，
     // 否则用户会按 Enter 期待发送、实际只换行，以为输入框坏了。
     return isMobile.value
-      ? '发送附件请附带文字，点右侧按钮发送'
-      : '发送附件请附带文字，Enter 换行，Ctrl/⌘+Enter 发送'
+      ? '可以只发图片/文件，也可以补充文字，点右侧按钮发送'
+      : '可只发图片/文件，也可补充文字；Enter 换行，Ctrl/⌘+Enter 发送'
   }
   return isMobile.value
     ? '输入消息（支持 Markdown），点右侧按钮发送'
@@ -263,7 +269,6 @@ const sendHintId = 'composer-send-hint'
 const sendHint = computed(() => {
   if (props.disabled) return '连接中断，暂时无法发送'
   if (uploading.value) return '附件正在上传，完成后再发送'
-  if (hasAttachments.value && trimmed.value.length === 0) return '发送附件时需要附带文字'
   if (overLimit.value) return `超出 ${MESSAGE_TEXT_MAX} 字上限，请删减后再发送`
   return ''
 })
@@ -651,7 +656,7 @@ function onKeydown(e: KeyboardEvent): void {
     return
   }
 
-  // 有附件：Enter 只换行，绝不发送（否则 400「发送附件时必须附带文字」）
+  // 有附件：Enter 只换行，绝不发送（防误发半成品，见文件头第 2 条）
   // 【不要 preventDefault】
   // 这里原本是 `e.preventDefault(); return`，结果 Enter 被完全吃掉 ——
   // 既不发送也不换行，用户按 Enter 毫无反应（e2e-v2 实测：textarea 里

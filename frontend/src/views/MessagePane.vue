@@ -401,8 +401,9 @@ onUnmounted(() => {
  * payload 来自 MessageComposer：`{ content, attachments, replyToMsgId }`。
  *
  * 【为什么 content 与 attachmentIds 一起传】v1 的实现在有附件时**丢掉了 content**，
- * 只发 `attachmentId`，于是「图片 + 文字」里的文字凭空消失（这正是本次要修的 bug）。
- * v2 契约本身就要求「有附件必须带非空 content」，两者从来不是二选一。
+ * 只发 `attachmentId`，于是「图片 + 文字」里的文字凭空消失（这正是 v2 修的 bug）。
+ * 现在两者既可并存、也可只有附件：content 允许为空串，附件允许为空数组，
+ * 唯一非法的组合是「既没有文字也没有附件」。
  *
  * 乐观消息与最终确认消息的 type 由 store/normalize 按附件统一推导，这里不重复判断。
  */
@@ -434,8 +435,17 @@ async function onSend(payload: ComposerSendPayload): Promise<void> {
     applyConfirmedSummary(confirmed)
   } catch (e) {
     const err = toApiError(e)
-    msgStore.markFailed(props.convId, local.clientMsgId ?? '', err.code)
-    ui.toast(`发送失败：${err.message}`, 'error')
+    /*
+     * 只有**确实把这条乐观消息标成了失败态**才提示。
+     *
+     * 反例（曾经真实存在）：服务端已落库，WS 的 `message.created` 抢先到达，
+     * `insertOrIgnore` 把 pending 兑现成了 confirmed；随后 axios 的超时/网络错误
+     * 才抛出。此时这条消息已经躺在时间线上、状态是 sent，再弹一个「发送失败」
+     * 就是纯误报 —— 用户会去点重试、甚至以为消息没发出去而重复发一遍。
+     * 所以把 toast 的触发权收归 store 的实际结果。
+     */
+    const marked = msgStore.markFailed(props.convId, local.clientMsgId ?? '', err.code)
+    if (marked) ui.toast(`发送失败：${err.message}`, 'error')
   }
 }
 
@@ -508,7 +518,10 @@ async function retry(msg: LocalMessage): Promise<void> {
     msgStore.insertOrIgnore(confirmed)
     applyConfirmedSummary(confirmed)
   } catch (e) {
-    msgStore.markFailed(props.convId, msg.clientMsgId, toApiError(e).code)
+    const err = toApiError(e)
+    if (msgStore.markFailed(props.convId, msg.clientMsgId, err.code)) {
+      ui.toast(`发送失败：${err.message}`, 'error')
+    }
   }
 }
 

@@ -14,6 +14,7 @@
 | v0.2.0+uploads | 2026-10-22 | `0.2.0` | **0** | **0** | **增量扩展**（新增 3 个 uploads 端点、Message 增 `attachment`、`type` 增 `image`/`file`；openapi 版本号未 bump，按下方「新增端点/新增可选字段/新增枚举值」三条规则执行） |
 | v0.3.0 | 2026-10-23 | `0.2.0` | **0** | **0** | **增量扩展**（第二轮体验改造：数字 uid、管理员后台、群角色、消息置顶、删除账号与附件可读范围修复；新增 8 个端点、User/Conversation 字段扩充；openapi 版本号仍不 bump） |
 | v0.4.0（v2） | 2026-10-27 | `0.3.0` | **0** | **0** | **破坏性变更**（v2 平台升级：`attachment`→`attachments[]`、消息体不再接 `type`、撤回/引用回复、广场 9 端点、访客资料；`protocolVersion` 1→2；`SCHEMA_VERSION` 3→4。openapi 版本号本轮同步 bump 到 `0.3.0`） |
+| v0.4.1（v2.3） | 2026-11-05 | `0.3.0` | **0** | **0** | **放宽型增量**（取消上传类型白名单：任意二进制照收，仅拦可执行文件；图片/文件上限 10→50 MiB；`content` 与附件互不依赖。openapi 版本号不 bump —— 无端点/字段/枚举变化，只放宽取值约束） |
 
 > **v0.4.0（v2）破坏性变更逐条**（详见 `docs/v2/RELEASE-NOTES.md` §2）：
 >
@@ -22,7 +23,7 @@
 > | 1 | 消息附件字段 | `attachment: Attachment \| null` | `attachments: Attachment[]`（空数组 = 无附件） | 前端必须改渲染与发送 |
 > | 2 | 发送体 | `{clientMsgId, content?, type?, attachmentId?}` | `{clientMsgId, content?, attachmentIds?(1..9 唯一), replyToMsgId?}` | 旧脚本全部 400 |
 > | 3 | `type` 来源 | 客户端传入 `text\|system\|image\|file` | **服务端按附件推导**，增 `video`/`mixed` | 客户端传 `type` 直接 400（`additionalProperties:false`） |
-> | 4 | 有附件约束 | 允许无文字裸发 | `attachmentIds` 非空时 `content` 必须非空 | 前端需禁用空文字发送 |
+> | 4 | 有附件约束 | 允许无文字裸发 | `attachmentIds` 非空时 `content` 必须非空（**2026-11-05 已放宽**：可只发附件，仅「既无附件也无文字」被拒） | 前端 `canSend` 已改为「有文字或有附件」 |
 > | 5 | 业务协议版本 | `protocolVersion: 1` | `protocolVersion: 2`（仅 ready 帧；信封 `v` 仍为 1） | 前后端必须同版上线 |
 > | 6 | `GET /uploads/:id` | 本人 + 同会话成员 | 追加「广场帖引用」「头像引用」两类 | 放宽，非破坏 |
 > | 7 | 新增字段 | — | Message 增 `recalled`/`recalledAt`/`replyTo`；Conversation.myRole 增 `admin` | 前端需 `default` 分支 |

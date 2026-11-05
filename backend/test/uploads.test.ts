@@ -8,7 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { test, type TestContext } from 'node:test';
 import { buildApp } from '../src/app.ts';
 import { SCHEMA_VERSION } from '../src/db.ts';
-import { MAX_UPLOAD_BYTES } from '../src/upload.ts';
+import { MAX_UPLOAD_BYTES, UPLOAD_BODY_LIMIT_VIDEO } from '../src/upload.ts';
 
 type Context = Awaited<ReturnType<typeof buildApp>>;
 interface Account { token: string; user: { id: string; username: string }; expiresAt: string }
@@ -18,6 +18,22 @@ const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
   'base64',
 );
+
+/**
+ * 最小合法 PE 头（Windows 可执行文件）。
+ *
+ * 只用 "MZ" 两个字节能被任意的普通文本撞上（比如以「MZ-80 笔记」开头的 md），
+ * 所以真正的判定要看 e_lfanew（偏移 0x3c）指向的 'PE\0\0' 签名 —— 这里按真实布局造一份。
+ */
+function makePeStub(): Buffer {
+  const bytes = Buffer.alloc(128, 0x00);
+  bytes[0] = 0x4d; // 'M'
+  bytes[1] = 0x5a; // 'Z'
+  bytes.writeUInt32LE(0x40, 0x3c); // e_lfanew → 0x40
+  bytes.write('PE\u0000\u0000', 0x40, 'latin1');
+  return bytes;
+}
+const PE_STUB = makePeStub();
 
 /**
  * 每个用例一个独立的临时上传目录。
@@ -133,20 +149,44 @@ test('上传：Content-Type 被忽略、纯文本与超限/不支持类型的错
   assert.equal(empty.statusCode, 400, empty.body);
   assert.equal(empty.json().error.code, 'VALIDATION_ERROR');
 
-  // 可执行文件魔数（MZ）不在白名单 → 415。
-  const exe = await upload(backend, alice.token, Buffer.from('MZ\x90\x00\x03\x00\x00\x00', 'latin1'), { filename: 'x.exe' });
+  // 可执行文件魔数（真 PE 头）→ 415。注意判定看的不是文件名而是字节，
+  // 所以「把 exe 改名成 .txt」也一样被拦；反过来「以 MZ 开头的普通文本」不会误伤。
+  const exe = await upload(backend, alice.token, PE_STUB, { filename: 'x.exe' });
   assert.equal(exe.statusCode, 415, exe.body);
   assert.equal(exe.json().error.code, 'UNSUPPORTED_MEDIA_TYPE');
+  assert.match(exe.json().error.message, /zip/);
   assert.ok(exe.json().error.traceId);
 
-  // 超过 10 MiB 业务上限但仍在 11 MiB 传输上限内 → 业务 413（带错误码）。
+  // 反过来：名字叫 .exe 但内容只是普通文本 → 照收（类型由字节决定，不信任扩展名）。
+  const fakeExe = await upload(backend, alice.token, Buffer.from('hello, not really an exe\n', 'utf8'), { filename: 'x.exe' });
+  assert.equal(fakeExe.statusCode, 201, fakeExe.body);
+  assert.equal(fakeExe.json().mimeType, 'text/plain');
+
+  // v2.3：认不出的二进制不再 415，而是落成通用文件（application/octet-stream / .bin）。
+  const unknown = await upload(backend, alice.token, Buffer.from([0x00, 0x01, 0x02, 0xff, 0xfe, 0x7f, 0x00]), { filename: 'blob.psd' });
+  assert.equal(unknown.statusCode, 201, unknown.body);
+  assert.equal(unknown.json().mimeType, 'application/octet-stream');
+  assert.equal(unknown.json().kind, 'file');
+  assert.equal(unknown.json().name, 'blob.psd');
+
+  // v2.3：常见文档/压缩包/音频都能认出具体类型（图标与扩展名靠它）。
+  const docx = await upload(backend, alice.token, Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 0x00)]), { filename: 'r.docx' });
+  assert.equal(docx.statusCode, 201, docx.body);
+  assert.equal(docx.json().mimeType, 'application/zip');
+  const mp3 = await upload(backend, alice.token, Buffer.concat([Buffer.from('ID3', 'latin1'), Buffer.alloc(64, 0x00)]), { filename: 'a.mp3' });
+  assert.equal(mp3.json().mimeType, 'audio/mpeg');
+  assert.equal(mp3.json().kind, 'file');
+  const rar = await upload(backend, alice.token, Buffer.concat([Buffer.from('Rar!\x1a\x07\x00', 'latin1'), Buffer.alloc(64, 0x00)]), { filename: 'a.rar' });
+  assert.equal(rar.json().mimeType, 'application/x-rar-compressed');
+
+  // 超过 50 MiB 业务上限但仍在 101 MiB 传输上限内 → 业务 413（带错误码）。
   const tooLarge = Buffer.alloc(MAX_UPLOAD_BYTES + 1, 0x41);
   const oversized = await upload(backend, alice.token, tooLarge, { filename: 'big.txt' });
   assert.equal(oversized.statusCode, 413, oversized.body.slice(0, 200));
   assert.equal(oversized.json().error.code, 'UPLOAD_TOO_LARGE');
 
-  // 超过 11 MiB 传输上限 → fastify 解析阶段就拒绝，错误处理器同样映射成 UPLOAD_TOO_LARGE。
-  const beyondTransport = await upload(backend, alice.token, Buffer.alloc(11 * 1024 * 1024 + 1, 0x41), { filename: 'bigger.txt' });
+  // 超过 101 MiB 传输上限 → fastify 解析阶段就拒绝，错误处理器同样映射成 UPLOAD_TOO_LARGE。
+  const beyondTransport = await upload(backend, alice.token, Buffer.alloc(UPLOAD_BODY_LIMIT_VIDEO + 1, 0x41), { filename: 'bigger.txt' });
   assert.equal(beyondTransport.statusCode, 413, beyondTransport.body.slice(0, 200));
   assert.equal(beyondTransport.json().error.code, 'UPLOAD_TOO_LARGE');
 

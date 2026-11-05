@@ -307,7 +307,9 @@ curl.exe -X POST http://127.0.0.1:3001/api/v1/auth/ws-ticket -H "Authorization: 
 | `GET /uploads/:id` | 无 | 200 原始字节（`Content-Type` 为嗅探结果） |
 | `DELETE /uploads/:id` | 无 | 204 无正文 |
 
-上传**不是** multipart/form-data：把文件字节直接作为请求体发送，`filename` 放在查询串（缺省名为 `未命名文件`，路径成分会被剥离）。服务端按魔数嗅探类型，白名单：`image/png`、`image/jpeg`、`image/webp`、`image/gif`、`application/pdf`、`application/zip`、`video/mp4`、`video/webm`，以及无 NUL 字节的严格 UTF-8 文本（`text/plain`）。其余返回 415 `UNSUPPORTED_MEDIA_TYPE`；空请求体 400 `VALIDATION_ERROR`。**大小上限按嗅探结果判定**：视频 100 MiB，其他 10 MiB，超限 413 `UPLOAD_TOO_LARGE`。
+上传**不是** multipart/form-data：把文件字节直接作为请求体发送，`filename` 放在查询串（缺省名为 `未命名文件`，路径成分会被剥离）。服务端按魔数嗅探类型并**接受绝大多数文件**：图片（png/jpeg/webp/gif/bmp/ico/avif）、音频（mp3/aac/wav/flac/ogg/m4a/amr/midi/wma）、视频（mp4/mov 族、webm/mkv 族）、文档（pdf、doc/xls/ppt 的 OLE2 与 OOXML、rtf）、压缩包（zip/rar/7z/gz/bz2/xz/zst/tar/cab）、字体（woff/woff2/otf/ttf），以及无 NUL 字节的严格 UTF-8 文本（`text/plain`）。**认不出的二进制不再被拒**，而是落成 `application/octet-stream` 通用文件照常收发。唯一被拒的是可执行文件（PE / ELF / Mach-O / Java class），返回 415 `UNSUPPORTED_MEDIA_TYPE` 并提示压缩成 zip；空请求体 400 `VALIDATION_ERROR`。**大小上限按嗅探结果判定**：视频 100 MiB，其他 50 MiB，超限 413 `UPLOAD_TOO_LARGE`。
+
+> 安全边界不在「收不收」，而在「下载怎么发」：`GET /uploads/:id` 一律带 `X-Content-Type-Options: nosniff` 与 `Content-Security-Policy: default-src 'none'; sandbox`，且非图片强制 `Content-Disposition: attachment`。因此即使有人上传了 HTML/SVG，也只会被当成文件下载，不会在本域执行。
 
 `GET /uploads/:id` 的可读权限是以下任一（否则 403 `FORBIDDEN`）：
 
@@ -477,8 +479,8 @@ typing 客户端应节流（建议最多每 2 秒一次），前端 5 秒无更�
 | 409 | `UPLOAD_IN_USE` | 附件已被其他消息或帖子引用 |
 | 409 | `PIN_LIMIT` | 单会话置顶超过 50 条 |
 | 409 | `CANNOT_MUTE_ADMIN`,`CANNOT_DELETE_ADMIN` | 不能对管理员账号执行该操作 |
-| 413 | `UPLOAD_TOO_LARGE` | 请求体或文件超过上限（JSON 64 KiB；图片/文件 10 MiB；视频 100 MiB） |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | 上传文件类型不在白名单 |
+| 413 | `UPLOAD_TOO_LARGE` | 请求体或文件超过上限（JSON 64 KiB；图片/文件 50 MiB；视频 100 MiB） |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | 上传的是可执行文件（PE/ELF/Mach-O/class），其余类型一律放行 |
 | 429 | `RATE_LIMITED` | 超频，等待 `Retry-After` |
 | 500 | `INTERNAL_ERROR` | 服务内部错误，不返回堆栈或数据库细节 |
 | 503 | `DEFAULT_FRIEND_UNAVAILABLE` | 配置的默认好友账号不存在，注册暂时不可用 |

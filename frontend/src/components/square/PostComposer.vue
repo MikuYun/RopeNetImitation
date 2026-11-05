@@ -26,9 +26,11 @@ import AppIcon from '@/components/base/AppIcon.vue'
 import AppModal from '@/components/base/AppModal.vue'
 import { uploadFile } from '@/api/uploads'
 import {
+  POST_IMAGE_MAX_BYTES,
   POST_MAX_CHARS,
   POST_MAX_ATTACHMENTS,
   POST_MAX_VIDEOS,
+  POST_VIDEO_MAX_BYTES,
   createPost as createPostApi,
 } from '@/api/posts'
 import { attachmentKindOf } from '@/api/posts'
@@ -199,9 +201,10 @@ function addFiles(files: File[]): void {
       ui.toast('广场仅支持图片和视频', 'error')
       continue
     }
-    // 视频只认 mp4/webm（后端按容器格式嗅探）
-    if (kind === 'video' && !['video/mp4', 'video/webm'].includes(file.type.toLowerCase())) {
-      ui.toast('仅支持 MP4 / WebM 视频', 'error')
+    // 广场只收图片/视频（这是产品限制，不是格式白名单）；视频容器交给服务端按魔数认，
+    // 浏览器不能播的容器（avi/mkv）在广场里没有展示意义，但也不必在前端硬拦死。
+    if (kind === 'video' && file.type && !file.type.toLowerCase().startsWith('video/')) {
+      ui.toast('仅支持视频文件', 'error')
       continue
     }
     if (kind === 'image' && items.filter((i) => i.kind === 'image').length >= POST_MAX_ATTACHMENTS) {
@@ -220,7 +223,7 @@ function addFiles(files: File[]): void {
       ui.toast(`「${file.name}」是空文件`, 'error')
       continue
     }
-    const limit = kind === 'video' ? 100 * 1024 * 1024 : 10 * 1024 * 1024
+    const limit = kind === 'video' ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES
     if (file.size > limit) {
       ui.toast(
         `${kind === 'video' ? '视频' : '图片'}「${file.name}」超过 ${formatBytes(limit)}（${formatBytes(file.size)}）`,

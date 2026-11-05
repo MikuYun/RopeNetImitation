@@ -14,19 +14,30 @@ import { join } from 'node:path';
  * 的是字节本身，所以类型必须以字节为准，客户端声明只作为提示丢弃。
  */
 
-/** 业务上限 10 MiB：超过即 413 UPLOAD_TOO_LARGE。 */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
+/**
+ * 业务上限 50 MiB：超过即 413 UPLOAD_TOO_LARGE。
+ *
+ * 【为什么从 10 MiB 提到 50 MiB】白名单放开到「几乎任何格式」之后，真实文件
+ * （压缩包、设计稿、Office 文档、字体包）动辄二三十 MiB。只放宽格式却死守 10 MiB，
+ * 等于把「不支持的类型」换成了「太大发不了」，用户拿到的仍是拒绝。
+ * 图片与视频的上限语义不变（视频 100 MiB，见 MAX_VIDEO_BYTES）。
+ */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 /**
- * 传输层 bodyLimit 11 MiB = 业务上限 + 1 MiB 余量。
+ * 传输层 bodyLimit 51 MiB = 业务上限 + 1 MiB 余量。
  * 两层上限分开的理由：bodyLimit 是 fastify 在解析阶段就能拒绝的硬闸（省内存），
  * 而业务上限要由我们自己回一个带错误码的 413；留出 1 MiB 余量保证
- * 「10 MiB < size ≤ 11 MiB」这种刚好越界的情况会走到业务判定、拿到 UPLOAD_TOO_LARGE，
+ * 「50 MiB < size ≤ 51 MiB」这种刚好越界的情况会走到业务判定、拿到 UPLOAD_TOO_LARGE，
  * 而不是被解析层提前掐断成通用错误。
+ *
+ * 注意：上传路由实际注册的解析器用的是最宽的一档 UPLOAD_BODY_LIMIT_VIDEO
+ * （解析阶段还无法知道这次传的是不是视频）；本常量保留给反代配置校验
+ * （backend/test/deploy-headers.test.ts）对齐使用。
  */
-export const UPLOAD_BODY_LIMIT = 11 * 1024 * 1024;
+export const UPLOAD_BODY_LIMIT = 51 * 1024 * 1024;
 
-/** 视频业务上限 100 MiB（契约 §3：视频单独一档，图片/普通文件仍 10 MiB）。 */
+/** 视频业务上限 100 MiB（契约 §3：视频单独一档，图片/普通文件仍 50 MiB）。 */
 export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 
 /**
@@ -44,13 +55,72 @@ interface Signature {
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
+/** ISO BMFF：偏移 4..8 一定是 'ftyp'，偏移 8..12 是 major brand。 */
+function ftypBrand(bytes: Buffer): string | null {
+  if (bytes.length < 12) return null;
+  return bytes.subarray(4, 8).toString('latin1') === 'ftyp' ? bytes.subarray(8, 12).toString('latin1') : null;
+}
+
+/**
+ * 可执行文件魔数黑名单：命中即 415。
+ *
+ * 【这不是安全边界】真正的边界在下载侧：`X-Content-Type-Options: nosniff` +
+ * `Content-Security-Policy: default-src 'none'; sandbox` + 非图片强制
+ * `Content-Disposition: attachment` 三件套，保证任何字节都不会在站内被执行。
+ * 这里只是一条产品上的便利保护 —— 不让聊天平台变成裸 exe 的分发通道
+ * （打包成 zip 依然可以传，这与主流 IM 的做法一致）。
+ */
+const EXECUTABLES: Array<{ label: string; test: (bytes: Buffer) => boolean }> = [
+  {
+    label: 'Windows 可执行文件',
+    // 只认真正的 PE：DOS 头 + e_lfanew 指向 'PE\0\0'。
+    // 单纯以 "MZ" 开头的文本（例如以「MZ-80 笔记」起头的 md）不能被误伤成可执行文件。
+    test: bytes => {
+      if (bytes.length < 64 || bytes[0] !== 0x4d || bytes[1] !== 0x5a) return false;
+      const offset = bytes.readUInt32LE(0x3c);
+      if (offset < 0x40 || offset + 4 > bytes.length) return false;
+      return bytes.subarray(offset, offset + 4).toString('latin1') === 'PE\u0000\u0000';
+    },
+  },
+  {
+    label: 'Linux 可执行文件',
+    test: bytes => bytes.length >= 4 && bytes[0] === 0x7f && bytes.subarray(1, 4).toString('latin1') === 'ELF',
+  },
+  {
+    label: 'macOS 可执行文件',
+    test: bytes => {
+      if (bytes.length < 4) return false;
+      const magic = bytes.subarray(0, 4).toString('hex');
+      return magic === 'feedface' || magic === 'cefaedfe' || magic === 'feedfacf' || magic === 'cffaedfe';
+    },
+  },
+  {
+    label: 'Java 类文件',
+    test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('hex') === 'cafebabe',
+  },
+];
+
+/** 命中可执行文件魔数时返回给人看的类型标签；null = 不是可执行文件。 */
+export function blockedExecutableLabel(bytes: Buffer): string | null {
+  for (const entry of EXECUTABLES) if (entry.test(bytes)) return entry.label;
+  return null;
+}
+
 /**
  * 魔数白名单（顺序即优先级，先命中先返回）。
- * 只收录「能安全 inline 展示或明确可附件下载」的类型：
- * 可执行文件、脚本、HTML、SVG 一律不进白名单 —— 它们进白名单就意味着
- * 上传接口变成 XSS/挂马的分发通道。
+ *
+ * 【v2.3 的定位变了】它不再是「准入名单」，而是「**能认出具体类型的名单**」：
+ * 认不出来的二进制不再被 415 拒绝，而是落到 application/octet-stream 当通用文件下载。
+ * 因此这里只做两件事：把能安全 inline 渲染的媒体认出来（图片/音频/视频），
+ * 把常见文档与压缩包认出来（好给出正确的图标与扩展名）。
+ *
+ * 【为什么不再担心 XSS】加密后的判定只影响 Content-Type 与扩展名；
+ * 下载响应头（nosniff + sandbox CSP + 非图片强制 attachment）决定了
+ * HTML/SVG/脚本即使被上传也只会被当成文件下载，无法在本域执行。
+ * 唯一 inline 的是 image/* 且必须魔数命中真实图片格式（SVG 是文本，永远走不到 image/*）。
  */
 const SIGNATURES: Signature[] = [
+  // ── 图片：只收浏览器能直接渲染的（避免 <img> 裂图）──
   { mimeType: 'image/png', test: bytes => bytes.length >= 8 && bytes.subarray(0, 8).equals(PNG_SIGNATURE) },
   { mimeType: 'image/jpeg', test: bytes => bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff },
   {
@@ -60,13 +130,117 @@ const SIGNATURES: Signature[] = [
       && bytes.subarray(8, 12).toString('latin1') === 'WEBP',
   },
   { mimeType: 'image/gif', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'GIF8' },
+  {
+    // BMP 以 'BM' 起头，但文本也可能以 "BM" 开头（如 "BMW 说明书"），
+    // 所以再要求「保留字段为 0」+「DIB 头长度是已知值」两个硬特征。
+    mimeType: 'image/bmp',
+    test: bytes => {
+      if (bytes.length < 18 || bytes[0] !== 0x42 || bytes[1] !== 0x4d) return false;
+      if (bytes.readUInt32LE(6) !== 0) return false;
+      return [12, 40, 52, 56, 64, 108, 124].includes(bytes.readUInt32LE(14));
+    },
+  },
+  { mimeType: 'image/x-icon', test: bytes => bytes.length >= 4 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1 && bytes[3] === 0 },
+  // AVIF 是 ISO BMFF 家族，必须在通用 ftyp 规则之前命中，否则会被当成视频。
+  // HEIC/HEIF 同理但浏览器不能渲染，故意不放进来（回落成通用文件下载）。
+  {
+    mimeType: 'image/avif',
+    test: bytes => {
+      const brand = ftypBrand(bytes);
+      return brand === 'avif' || brand === 'avis';
+    },
+  },
+  // ── 音频 ──
+  {
+    mimeType: 'audio/wav',
+    test: bytes => bytes.length >= 12
+      && bytes.subarray(0, 4).toString('latin1') === 'RIFF'
+      && bytes.subarray(8, 12).toString('latin1') === 'WAVE',
+  },
+  { mimeType: 'audio/flac', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'fLaC' },
+  { mimeType: 'audio/ogg', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'OggS' },
+  {
+    mimeType: 'audio/mp4',
+    test: bytes => {
+      const brand = ftypBrand(bytes);
+      return brand !== null && ['M4A ', 'M4B ', 'M4P ', 'F4A ', 'mp4a'].includes(brand);
+    },
+  },
+  { mimeType: 'audio/amr', test: bytes => bytes.length >= 5 && bytes.subarray(0, 5).toString('latin1') === '#!AMR' },
+  { mimeType: 'audio/midi', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'MThd' },
+  {
+    mimeType: 'audio/x-ms-wma',
+    test: bytes => bytes.length >= 4 && bytes[0] === 0x30 && bytes[1] === 0x26 && bytes[2] === 0xb2 && bytes[3] === 0x75,
+  },
+  // ADTS 帧头（AAC）必须在 MP3 的「0xFFEx 同步字」规则之前，否则 aac 会被判成 mp3。
+  { mimeType: 'audio/aac', test: bytes => bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] === 0xf1 || bytes[1] === 0xf9) },
+  {
+    mimeType: 'audio/mpeg',
+    test: bytes => {
+      if (bytes.length >= 3 && bytes.subarray(0, 3).toString('latin1') === 'ID3') return true;
+      if (bytes.length < 2 || bytes[0] !== 0xff) return false;
+      // noUncheckedIndexedAccess：已用 length>=2 收窄，这里显式断言掉 undefined。
+      const second = bytes[1] as number;
+      return [0xfa, 0xfb, 0xf3, 0xf2].includes(second);
+    },
+  },
+  // ── 文档 ──
   { mimeType: 'application/pdf', test: bytes => bytes.length >= 5 && bytes.subarray(0, 5).toString('latin1') === '%PDF-' },
+  // doc/xls/ppt 共用的 OLE2 复合文档头。三者无法在字节层区分，统一交给扩展名出图标。
+  {
+    mimeType: 'application/x-ole-storage',
+    test: bytes => bytes.length >= 8
+      && bytes[0] === 0xd0 && bytes[1] === 0xcf && bytes[2] === 0x11 && bytes[3] === 0xe0
+      && bytes[4] === 0xa1 && bytes[5] === 0xb1 && bytes[6] === 0x1a && bytes[7] === 0xe1,
+  },
+  { mimeType: 'application/rtf', test: bytes => bytes.length >= 5 && bytes.subarray(0, 5).toString('latin1') === '{\\rtf' },
+  // ── 压缩包 / 归档 ──
   {
     mimeType: 'application/zip',
-    test: bytes => bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04,
+    test: bytes => bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
+      && ((bytes[2] === 0x03 && bytes[3] === 0x04) || (bytes[2] === 0x05 && bytes[3] === 0x06) || (bytes[2] === 0x07 && bytes[3] === 0x08)),
   },
-  // v4：视频。ISO BMFF（mp4/m4v/mov 同族）的第二个 box 一定是 'ftyp'，
-  // 偏移 0..4 是 box 长度（大端，可变），因此只校验偏移 4..8 的类型字段。
+  {
+    mimeType: 'application/x-rar-compressed',
+    test: bytes => bytes.length >= 7 && bytes.subarray(0, 4).toString('latin1') === 'Rar!',
+  },
+  {
+    mimeType: 'application/x-7z-compressed',
+    test: bytes => bytes.length >= 6 && bytes.subarray(0, 6).toString('hex') === '377abcaf271c',
+  },
+  { mimeType: 'application/gzip', test: bytes => bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b },
+  {
+    mimeType: 'application/x-bzip2',
+    test: bytes => bytes.length >= 3 && bytes.subarray(0, 3).toString('latin1') === 'BZh',
+  },
+  {
+    mimeType: 'application/x-xz',
+    test: bytes => bytes.length >= 6 && bytes.subarray(0, 6).toString('hex') === 'fd377a585a00',
+  },
+  {
+    mimeType: 'application/zstd',
+    test: bytes => bytes.length >= 4 && bytes[0] === 0x28 && bytes[1] === 0xb5 && bytes[2] === 0x2f && bytes[3] === 0xfd,
+  },
+  // tar 没有头部魔数，只有偏移 257 处的 'ustar' 标记（GNU 是 'ustar  \0'，POSIX 是 'ustar\0'）。
+  {
+    mimeType: 'application/x-tar',
+    test: bytes => bytes.length >= 265 && bytes.subarray(257, 262).toString('latin1') === 'ustar',
+  },
+  {
+    mimeType: 'application/vnd.ms-cab-compressed',
+    test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'MSCF',
+  },
+  // ── 字体 ──
+  { mimeType: 'font/woff', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'wOFF' },
+  { mimeType: 'font/woff2', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'wOF2' },
+  { mimeType: 'font/otf', test: bytes => bytes.length >= 4 && bytes.subarray(0, 4).toString('latin1') === 'OTTO' },
+  {
+    mimeType: 'font/ttf',
+    test: bytes => bytes.length >= 5
+      && ((bytes[0] === 0x00 && bytes[1] === 0x01 && bytes[2] === 0x00 && bytes[3] === 0x00 && bytes[4] === 0x00)
+        || bytes.subarray(0, 4).toString('latin1') === 'true'),
+  },
+  // ── 视频（放在最后：通用 ftyp 会把 avif/m4a 抢走，所以它们必须排在前面）──
   {
     mimeType: 'video/mp4',
     test: bytes => bytes.length >= 8 && bytes.subarray(4, 8).toString('latin1') === 'ftyp',
@@ -98,12 +272,22 @@ function isPlainText(bytes: Buffer): boolean {
   }
 }
 
-/** 返回服务端认定的 mime；null = 不在白名单（调用方回 415）。 */
-export function detectMimeType(bytes: Buffer): string | null {
+/**
+ * 返回服务端认定的 mime（永不返回 null）。
+ *
+ * 判定顺序：魔数白名单 → 严格 UTF-8 纯文本 → `application/octet-stream` 兜底。
+ *
+ * 【兜底是 v2.3 的核心变化】以前认不出的二进制会 415「不支持的文件类型」，
+ * 结果就是「除了 png/pdf/zip，什么都不能发」。现在认不出只会失去「具体类型」
+ * 这个便利（图标退化成通用文件、磁盘扩展名 .bin），文件本身照样能传能下：
+ * 下载时由 nosniff + sandbox CSP + attachment 三件套兜住安全。
+ * 真正被拒的只有可执行文件，见 blockedExecutableLabel。
+ */
+export function detectMimeType(bytes: Buffer): string {
   for (const signature of SIGNATURES) {
     if (signature.test(bytes)) return signature.mimeType;
   }
-  return isPlainText(bytes) ? 'text/plain' : null;
+  return isPlainText(bytes) ? 'text/plain' : 'application/octet-stream';
 }
 
 /** 存储用扩展名。由 mime 推导（而不是沿用客户端文件名），保证磁盘上的名字不可被客户端影响。 */
@@ -112,11 +296,38 @@ const EXTENSIONS: Record<string, string> = {
   'image/jpeg': '.jpg',
   'image/webp': '.webp',
   'image/gif': '.gif',
+  'image/bmp': '.bmp',
+  'image/x-icon': '.ico',
+  'image/avif': '.avif',
+  'audio/wav': '.wav',
+  'audio/flac': '.flac',
+  'audio/ogg': '.ogg',
+  'audio/mp4': '.m4a',
+  'audio/amr': '.amr',
+  'audio/midi': '.mid',
+  'audio/x-ms-wma': '.wma',
+  'audio/aac': '.aac',
+  'audio/mpeg': '.mp3',
   'application/pdf': '.pdf',
+  'application/x-ole-storage': '.ole',
+  'application/rtf': '.rtf',
   'application/zip': '.zip',
+  'application/x-rar-compressed': '.rar',
+  'application/x-7z-compressed': '.7z',
+  'application/gzip': '.gz',
+  'application/x-bzip2': '.bz2',
+  'application/x-xz': '.xz',
+  'application/zstd': '.zst',
+  'application/x-tar': '.tar',
+  'application/vnd.ms-cab-compressed': '.cab',
+  'font/woff': '.woff',
+  'font/woff2': '.woff2',
+  'font/otf': '.otf',
+  'font/ttf': '.ttf',
   'text/plain': '.txt',
   'video/mp4': '.mp4',
   'video/webm': '.webm',
+  'application/octet-stream': '.bin',
 };
 
 export function extensionFor(mimeType: string): string {

@@ -5,8 +5,8 @@ import type { Realtime } from './realtime.ts';
 import { fail } from './errors.ts';
 import { hashPassword } from './security.ts';
 import {
-  MAX_UPLOAD_BYTES, MAX_VIDEO_BYTES, detectMimeType, isVideo, kindFor, removeUploadFile, sanitizeFilename,
-  uploadPath, writeUpload,
+  MAX_UPLOAD_BYTES, MAX_VIDEO_BYTES, blockedExecutableLabel, detectMimeType, isVideo, kindFor, removeUploadFile,
+  sanitizeFilename, uploadPath, writeUpload,
 } from './upload.ts';
 
 interface UserRow {
@@ -736,15 +736,22 @@ export class ChatService {
   /**
    * 落盘 + 入库。先写文件再插库：写文件失败时不会留下指向空文件的记录。
    *
-   * v2：上传大小上限按 kind 分档（契约 §1）——图片/文件 10 MiB，视频 100 MiB。
+   * v2：上传大小上限按 kind 分档（契约 §1）——图片/文件 50 MiB，视频 100 MiB。
    * kind 由服务端嗅探出的 mimeType 决定，不信任客户端的 Content-Type / 扩展名。
+   *
+   * v2.3：类型不再走「白名单准入」，认不出的二进制按 application/octet-stream 收下，
+   * 唯一被拒的是可执行文件（blockedExecutableLabel）。理由见 upload.ts 的 SIGNATURES 注释。
    */
   createUpload(ownerId: string, filename: string | undefined, bytes: Buffer) {
     if (bytes.length === 0) return fail(400, 'VALIDATION_ERROR', '上传内容不能为空');
+    // 可执行文件先拦，给出比「不支持的文件类型」更有指导性的文案（告诉用户可以打包成 zip）。
+    const blocked = blockedExecutableLabel(bytes);
+    if (blocked !== null) {
+      return fail(415, 'UNSUPPORTED_MEDIA_TYPE', `不支持上传${blocked}，请压缩成 zip 后发送`);
+    }
     const mimeType = detectMimeType(bytes);
-    if (!mimeType) return fail(415, 'UNSUPPORTED_MEDIA_TYPE', '不支持的文件类型');
     const kind = kindFor(mimeType);
-    // 先按 kind 选上限再判超限：视频 100 MiB，其余仍是 10 MiB。
+    // 先按 kind 选上限再判超限：视频 100 MiB，其余 50 MiB。
     // 用 isVideo(mimeType) 而不是 kind === 'video'：前者是 mime 前缀判定，与 upload.ts 内部分档同源。
     const limit = isVideo(mimeType) ? MAX_VIDEO_BYTES : MAX_UPLOAD_BYTES;
     if (bytes.length > limit) {

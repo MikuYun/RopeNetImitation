@@ -366,7 +366,9 @@ function pickImage(): void {
 }
 
 function pickVideo(): void {
-  openPicker('video/mp4,video/webm')
+  // v2.3：不再限死 mp4/webm 两个 mime。选了浏览器不能播的容器（avi/mkv 等）
+  // 也不至于发不出去 —— 服务端按魔数收下，附件卡片退化成下载入口。
+  openPicker('video/*')
 }
 
 function pickFile(): void {
@@ -867,7 +869,7 @@ defineExpose({ stopTyping })
       multiple
       tabindex="-1"
       aria-hidden="true"
-      accept="image/*,video/mp4,video/webm,.pdf,.zip,.txt"
+      accept="image/*,video/*,audio/*,.pdf,.zip,.rar,.7z,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.md,.json,.csv"
       @change="onFileChange"
     />
 

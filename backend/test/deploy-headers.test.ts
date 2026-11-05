@@ -98,7 +98,7 @@ test('SEC-04 Permissions-Policy 与后端常量逐字一致（两个 nginx 配�
 });
 
 /**
- * 反代 body 上限必须大于应用层上传上限（UPLOAD_BODY_LIMIT = 11 MiB）。
+ * 反代 body 上限必须大于应用层上传上限（UPLOAD_BODY_LIMIT = 51 MiB）。
  *
  * 为什么单独立一条：nginx 的 client_max_body_size 是**独立于代码的硬闸**，改了上传上限却忘了改它，
  * 生产上所有超过该值的图片/文件都会在反代层被 413，而响应体是 nginx 自己的 HTML，

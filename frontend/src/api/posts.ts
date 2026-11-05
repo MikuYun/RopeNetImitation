@@ -32,8 +32,8 @@ export const COMMENT_MAX_CHARS = 1000
 export const POST_MAX_ATTACHMENTS = 9
 /** 单帖视频数上限。 */
 export const POST_MAX_VIDEOS = 1
-/** 图片单文件上限（与上传端点一致）。 */
-export const POST_IMAGE_MAX_BYTES = 10 * 1024 * 1024
+/** 图片单文件上限（与上传端点一致，v2.3 从 10 MiB 提到 50 MiB）。 */
+export const POST_IMAGE_MAX_BYTES = 50 * 1024 * 1024
 /** 视频单文件上限（契约 §1：视频 100MiB）。 */
 export const POST_VIDEO_MAX_BYTES = 100 * 1024 * 1024
 /** 分页默认页长。 */

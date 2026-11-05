@@ -2,7 +2,7 @@
  * 附件纯逻辑单测：上传前拦截、体积格式化、图标分类、会话列表预览文案。
  *
  * 这些是全前端「附件」功能的地基 —— 一旦 formatBytes 算错，用户会看到
- * `10485760 B` 这种没法读的数字；一旦 checkUploadFile 漏判，>10MiB 的
+ * `52428800 B` 这种没法读的数字；一旦 checkUploadFile 漏判，>50MiB 的
  * 文件会白跑一次上传再被后端 413 打回。
  */
 import { describe, expect, it } from 'vitest'
@@ -44,16 +44,16 @@ describe('checkUploadFile', () => {
     expect(r.ok).toBe(false)
   })
 
-  it('恰好 10MiB 放行（边界取等）', () => {
+  it('恰好 50MiB 放行（边界取等）', () => {
     expect(checkUploadFile({ name: 'a.bin', size: MAX_UPLOAD_BYTES })).toEqual({ ok: true })
   })
 
-  it('10MiB + 1 字节被拦，并且提示里带具体体积', () => {
+  it('50MiB + 1 字节被拦，并且提示里带具体体积', () => {
     const r = checkUploadFile({ name: 'a.bin', size: MAX_UPLOAD_BYTES + 1 })
     expect(r.ok).toBe(false)
     if (!r.ok) {
       expect(r.code).toBe('UPLOAD_TOO_LARGE')
-      expect(r.message).toContain('10')
+      expect(r.message).toContain('50')
       expect(r.message).toContain('MB')
     }
   })
@@ -68,7 +68,7 @@ describe('formatBytes', () => {
   it('KB / MB 保留 1 位小数', () => {
     expect(formatBytes(1536)).toBe('1.5 KB')
     expect(formatBytes(1024)).toBe('1.0 KB')
-    expect(formatBytes(MAX_UPLOAD_BYTES)).toBe('10.0 MB')
+    expect(formatBytes(MAX_UPLOAD_BYTES)).toBe('50.0 MB')
   })
 
   it('非法值兜底为 0 B', () => {
@@ -99,6 +99,19 @@ describe('attachmentIconKind', () => {
 
   it('未知类型归 other（不猜成图片）', () => {
     expect(attachmentIconKind(att('application/octet-stream', 'x.bin'))).toBe('other')
+  })
+
+  it('Office 家族按扩展名分类（docx 是 zip 容器，不能显示成压缩包）', () => {
+    expect(attachmentIconKind(att('application/zip', 'r.docx'))).toBe('doc')
+    expect(attachmentIconKind(att('application/zip', 'r.xlsx'))).toBe('sheet')
+    expect(attachmentIconKind(att('application/zip', 'r.pptx'))).toBe('slide')
+    expect(attachmentIconKind(att('application/x-ole-storage', 'old.doc'))).toBe('doc')
+  })
+
+  it('音频归 audio', () => {
+    expect(attachmentIconKind(att('audio/mpeg', 'a.mp3'))).toBe('audio')
+    expect(attachmentIconKind(att('application/octet-stream', 'a.flac'))).toBe('audio')
+    expect(attachmentIconKind(att('', 'a.wav'))).toBe('audio')
   })
 
   it('mime 为空时退回扩展名', () => {
@@ -139,11 +152,11 @@ describe('会话列表预览文案', () => {
  * ── v2：视频分档 / 多附件组合 / 新增预览文案 ──
  *
  * 这几条是 API 0.3.0 才出现的行为，之前没有测试保护：
- *   - 视频上限 100MiB 与普通文件 10MiB 是**两档**，写成一档会让 50MB 的 mp4
- *     被前端拦下（用户以为功能坏了），或者让 50MB 的 pdf 白跑一次上传再被 413。
+ *   - 视频上限 100MiB 与普通文件 50MiB 是**两档**，写成一档会让 60MB 的 mp4
+ *     被前端拦下（用户以为功能坏了），或者让 60MB 的 pdf 白跑一次上传再被 413。
  *   - 合计 ≤9 / 视频 ≤1 的规则在三个入口（选文件、拖拽、粘贴）共用。
  */
-describe('v2 附件分档：视频 100MiB / 图片与普通文件 10MiB', () => {
+describe('v2 附件分档：视频 100MiB / 图片与普通文件 50MiB', () => {
   it('视频恰好 100MiB 放行，超 1 字节被拦且提示带体积', () => {
     expect(checkUploadFile({ name: 'a.mp4', size: MAX_VIDEO_UPLOAD_BYTES, type: 'video/mp4' })).toEqual({
       ok: true,
@@ -160,12 +173,15 @@ describe('v2 附件分档：视频 100MiB / 图片与普通文件 10MiB', () => 
     }
   })
 
-  it('50MiB 的 mp4 放行（这正是分两档的意义：普通档只有 10MiB）', () => {
+  it('50MiB 的 mp4 放行，同样体积的普通文件也放行（v2.3 起普通档也是 50MiB）', () => {
     expect(checkUploadFile({ name: 'a.mp4', size: 50 * 1024 * 1024, type: 'video/mp4' })).toEqual({
       ok: true,
     })
-    // 同样体积的普通文件仍然被 10MiB 档拦住
-    const r = checkUploadFile({ name: 'a.pdf', size: 50 * 1024 * 1024, type: 'application/pdf' })
+    expect(checkUploadFile({ name: 'a.pdf', size: 50 * 1024 * 1024, type: 'application/pdf' })).toEqual({
+      ok: true,
+    })
+    // 两档的差别体现在上限之外：普通文件 50MiB 是天花板，视频还能再往上到 100MiB
+    const r = checkUploadFile({ name: 'a.pdf', size: 60 * 1024 * 1024, type: 'application/pdf' })
     expect(r.ok).toBe(false)
   })
 
@@ -175,25 +191,33 @@ describe('v2 附件分档：视频 100MiB / 图片与普通文件 10MiB', () => 
     })
   })
 
-  it('非 mp4/webm 的视频 mime 被拦（MOV 等后端不收）', () => {
-    const r = checkUploadFile({ name: 'a.mov', size: 1024, type: 'video/quicktime' })
-    expect(r.ok).toBe(false)
-    if (!r.ok) {
-      expect(r.code).toBe('UNSUPPORTED_TYPE')
-      expect(r.message).toContain('MP4')
+  it('视频不再限死 mp4/webm：MOV/MKV 也放行（服务端按魔数认容器）', () => {
+    expect(checkUploadFile({ name: 'a.mov', size: 1024, type: 'video/quicktime' })).toEqual({
+      ok: true,
+    })
+    expect(checkUploadFile({ name: 'a.mkv', size: 1024, type: 'video/x-matroska' })).toEqual({
+      ok: true,
+    })
+  })
+
+  it('可执行文件被拦，并提示压缩成 zip', () => {
+    for (const name of ['a.exe', 'a.msi', 'a.dll', 'a.jar', 'a.apk', 'a.dmg']) {
+      const r = checkUploadFile({ name, size: 1024 })
+      expect(r.ok).toBe(false)
+      if (!r.ok) {
+        expect(r.code).toBe('UNSUPPORTED_TYPE')
+        expect(r.message).toContain('zip')
+      }
     }
   })
 
-  it('不支持的普通文件类型给出统一提示文案', () => {
-    const r = checkUploadFile({ name: 'a.exe', size: 1024, type: 'application/x-msdownload' })
-    expect(r.ok).toBe(false)
-    if (!r.ok) {
-      expect(r.code).toBe('UNSUPPORTED_TYPE')
-      expect(r.message).toBe('仅支持图片、视频（MP4/WebM）、PDF、ZIP 与纯文本')
+  it('任意普通文件格式都放行（不再有类型白名单）', () => {
+    for (const name of ['a.docx', 'a.xlsx', 'a.pptx', 'a.rar', 'a.7z', 'a.mp3', 'a.psd', 'a.iso', 'a.bin']) {
+      expect(checkUploadFile({ name, size: 1024 })).toEqual({ ok: true })
     }
   })
 
-  it('图片只受 10MiB 档约束（图片不因视频放宽）', () => {
+  it('图片只受 50MiB 档约束（图片不因视频放宽）', () => {
     expect(checkUploadFile({ name: 'a.png', size: MAX_UPLOAD_BYTES, type: 'image/png' })).toEqual({
       ok: true,
     })

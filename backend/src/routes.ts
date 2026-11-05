@@ -491,7 +491,7 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
     uploads.post('/api/v1/uploads', {
       bodyLimit: UPLOAD_BODY_LIMIT_VIDEO,
       config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
-      schema: { ...secured('Uploads', '上传文件（请求体为裸二进制，服务端按魔数嗅探真实类型）'),
+      schema: { ...secured('Uploads', '上传文件（请求体为裸二进制，服务端按魔数嗅探真实类型；认不出的二进制按通用文件收下，仅拒绝可执行文件）'),
         querystring: Schema.UploadQuery,
         response: { 201: Schema.Upload, ...Schema.ErrorResponses } },
     }, async (request, reply) => {

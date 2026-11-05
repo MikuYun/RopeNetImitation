@@ -32,8 +32,9 @@ interface Attachment {
 }
 ```
 
-- 新增 `video` 类型：`video/mp4`、`video/webm`。
-- 单文件上限：图片/普通文件 10 MiB，视频 100 MiB。
+- 新增 `video` 类型：`video/mp4`、`video/webm`（服务端按魔数认容器，MOV/MKV 等同类容器也归入这两档）。
+- **v2.3 起取消类型白名单**：图片 / 音频 / 视频 / 文档 / 压缩包 / 字体 / 纯文本都收，认不出的二进制落成 `application/octet-stream` 通用文件照常收发；只有可执行文件（PE/ELF/Mach-O/class）返回 415 并提示压缩成 zip。
+- 单文件上限：图片/普通文件 **50 MiB**（v2.3 从 10 MiB 上调），视频 100 MiB。
 - `GET /api/v1/uploads/:id` 的读取权限（v2 放宽）：
   1) 上传者本人；2) 该附件被引用在「我参与的会话」的消息里；
   3) 该附件被引用在任意广场帖子里（登录用户皆可看）；

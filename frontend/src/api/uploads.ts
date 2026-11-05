@@ -22,8 +22,8 @@ import { http } from './http'
 import type { Attachment, AttachmentKind } from '@/types/domain'
 import type { WireAttachment } from './wire'
 
-/** 图片/普通文件上限（10 MiB，与服务端一致）；超了后端返回 413，前端提前拦。 */
-export const UPLOAD_MAX_BYTES = 10 * 1024 * 1024
+/** 图片/普通文件上限（50 MiB，与服务端一致）；超了后端返回 413，前端提前拦。 */
+export const UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 
 /**
  * 视频上限（100 MiB）。
@@ -76,7 +76,7 @@ export async function uploadFile(file: File, options: UploadOptions = {}): Promi
     file,
     {
       headers: { 'Content-Type': file.type || 'application/octet-stream' },
-      // 上传大文件时 20s 的默认超时太紧（慢网 10MiB 可能超）
+      // 上传大文件时 20s 的默认超时太紧（慢网 50MiB 可能超）
       timeout: 120_000,
       signal: options.signal,
       onUploadProgress: (e) => {

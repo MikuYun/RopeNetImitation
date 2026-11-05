@@ -90,6 +90,18 @@ v1：仅上传者本人 / 同会话成员。v2 追加「广场帖子引用」与
 **`backend/deploy/DEPLOYED.md` 里「不修改数据库，无数据库迁移或重置」这句承诺在 v2 起不再成立。**
 升级前必须按 §3 备份。
 
+### 2.7 上传格式与体积上限（v2.3，2026-11-05）
+
+- **取消类型白名单**：以前只有 png/jpeg/webp/gif/pdf/zip/mp4/webm/纯文本能传，其余 415
+  「不支持的文件类型」。现在按魔数**认出**图片、音频、视频、文档、压缩包、字体等大类，
+  **认不出的二进制也不再拒绝**，落成 `application/octet-stream` 通用文件照常收发。
+- **唯一被拒的仍是可执行文件**（PE / ELF / Mach-O / Java class），返回 415 并提示压缩成 zip。
+  安全边界不在「收不收」，而在下载侧：`nosniff` + `Content-Security-Policy: default-src 'none'; sandbox`
+  + 非图片强制 `Content-Disposition: attachment`，任何字节都不会在本域执行。
+- **上限**：图片/普通文件 **10 MiB → 50 MiB**（`UPLOAD_BODY_LIMIT` 11 → 51 MiB），视频仍 100 MiB。
+- **前端**：输入框 `accept` 放宽为 `image/*,video/*,audio/*` + 常见文档扩展名；视频入口
+  `openPicker('video/*')`；附件图标新增 `audio / doc / sheet / slide` 四类。
+
 ---
 
 ## 3. 升级与首次上线步骤

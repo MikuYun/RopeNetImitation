@@ -509,6 +509,27 @@ function videoAlt(att: Attachment): string {
             <rect x="3" y="6" width="13" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.6" />
             <path d="M16 10l5-3v10l-5-3z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
           </svg>
+          <svg v-else-if="iconKindOf(att) === 'audio'" viewBox="0 0 24 24" width="20" height="20">
+            <path d="M9 18V6l9-2v12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <circle cx="7" cy="18" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="16" cy="16" r="2.4" fill="none" stroke="currentColor" stroke-width="1.6" />
+          </svg>
+          <svg v-else-if="iconKindOf(att) === 'doc'" viewBox="0 0 24 24" width="20" height="20">
+            <path d="M6 2h8l4 4v16H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <path d="M14 2v5h5" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <path d="M9 12h6M9 15h6M9 18h3" fill="none" stroke="currentColor" stroke-width="1.6" />
+          </svg>
+          <svg v-else-if="iconKindOf(att) === 'sheet'" viewBox="0 0 24 24" width="20" height="20">
+            <path d="M6 2h8l4 4v16H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <path d="M14 2v5h5" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <path d="M9 11h6M9 14h6M9 17h6M12 11v6" fill="none" stroke="currentColor" stroke-width="1.3" />
+          </svg>
+          <svg v-else-if="iconKindOf(att) === 'slide'" viewBox="0 0 24 24" width="20" height="20">
+            <path d="M6 2h8l4 4v16H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
+            <path d="M14 2v5h5" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <rect x="9" y="11" width="6" height="5" rx="0.6" fill="none" stroke="currentColor" stroke-width="1.4" />
+            <path d="M12 16v2" fill="none" stroke="currentColor" stroke-width="1.4" />
+          </svg>
           <svg v-else viewBox="0 0 24 24" width="20" height="20">
             <path d="M6 2h8l4 4v16H6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" />
             <path d="M14 2v5h5" fill="none" stroke="currentColor" stroke-width="1.6" />
@@ -829,6 +850,18 @@ function videoAlt(att: Attachment): string {
 }
 .att__icon--video {
   color: var(--color-accent-500);
+}
+.att__icon--audio {
+  color: var(--color-accent-500);
+}
+.att__icon--doc {
+  color: var(--color-brand-500);
+}
+.att__icon--sheet {
+  color: var(--color-success-500);
+}
+.att__icon--slide {
+  color: var(--color-warn-500);
 }
 .att__main {
   flex: 1;

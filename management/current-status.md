@@ -16,9 +16,9 @@ v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.
 | 后端类型 | `node node_modules/typescript/bin/tsc --noEmit` | EXIT 0 |
 | 后端单测 | `node --experimental-strip-types --test test/*.test.ts` | **64/64 pass / 0 fail**（8 文件，含新增 `v2.test.ts`、`db-migration.test.ts`、`seed-user.test.ts`） |
 | 前端类型 | `npm run typecheck` | `vue-tsc --noEmit` 0 error |
-| 前端单测 | `npm test` | 14 files / **307 tests** 全绿（含 4 条「发送失败误报」门禁） |
+| 前端单测 | `npm test` | 14 files / **310 tests** 全绿（含 4 条「发送失败误报」门禁） |
 | 生产构建 | `npm run build` | exit 0，`✓ built in 1.04s` + `strip-mock-worker.mjs` 校验通过 |
-| e2e 六项需求（+ 需求 8） | `node e2e-v2.mjs` | **69 项：PASS 69 / FAIL 0 / DEFECT 0 / SKIP 0**（含「单独发附件」与「发送失败误报」回归） |
+| e2e 六项需求（+ 需求 8） | `node e2e-v2.mjs` | **72 项：PASS 72 / FAIL 0 / DEFECT 0 / SKIP 0**（含「单独发附件」与「发送失败误报」回归） |
 | e2e 附件 / UX P0 / 矩阵 / 门禁 / 响应式 | 各自脚本 | 38/38、50/50、93/93、13 通过 0 失败 1 待验、117 断言 0 失败 |
 | 对话框无障碍 | `node scripts/verify-dialog-a11y.mjs` | 15/15 |
 | 需求 5 + 需求 8 清库 | `backend/scripts/reset-db.mjs` 在隔离库上 | 清 15 张业务表 → 重建两个初始账号 → 重启 → `root/12345678` 与 `QJQ/A454545asd@` 均登录 **200** |
@@ -45,6 +45,24 @@ v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.
 - `SCHEMA_VERSION` 3 → 4，启动自动迁移，不可回退 → **升级前必须备份库 + uploads 目录**。
 
 注意：`backend/deploy/DEPLOYED.md` 历史记录里「不修改数据库，无数据库迁移或重置」这句承诺在 v2 起**不再成立**。
+
+### 2026-11-05 · v2.3 上传格式与体积上限放开
+
+- **取消类型白名单**：以前只收 png/jpeg/webp/gif/pdf/zip/mp4/webm/纯文本，其余 415
+  「不支持的文件类型」（用户看到的就是这句 toast）。现在按魔数**认出**图片 / 音频 / 视频 /
+  文档 / 压缩包 / 字体等大类，**认不出的二进制也不再拒绝**，落成 `application/octet-stream`
+  通用文件照常收发。
+- **唯一仍被拒的是可执行文件**（PE / ELF / Mach-O / Java class）→ 415 + 提示压缩成 zip。
+  判定看字节不看扩展名：`x.exe` 里装普通文本照收，`.txt` 里装真 PE 照样拒。
+- 安全边界不在「收不收」，而在下载侧：`nosniff` + `Content-Security-Policy: default-src 'none'; sandbox`
+  + 非图片强制 `Content-Disposition: attachment` —— 任何字节都不会在本域执行。
+- **上限**：图片/普通文件 **10 MiB → 50 MiB**（`UPLOAD_BODY_LIMIT` 11 → 51 MiB），视频仍 100 MiB；
+  广场图片上限同步 50 MiB。
+- **前端**：输入框 `accept` 放宽为 `image/*,video/*,audio/*` + 常见文档扩展名；视频入口改
+  `openPicker('video/*')`；附件图标新增 `audio / doc / sheet / slide` 四类；前端不再做类型白名单
+  拦截，只拦空文件、超体积与可执行扩展名。
+- **不需要数据库迁移**（`uploads.kind` 仍只取 image/video/file 三者之一）。
+- 无端点 / 字段 / 枚举变化 → openapi 版本号不 bump，契约校验仍 **ERROR 0 / WARN 0**。
 
 ### 仍未关闭的风险
 

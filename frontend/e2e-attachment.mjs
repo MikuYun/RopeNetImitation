@@ -12,7 +12,7 @@
  *   ATT-03  B 侧实时收到 A 的图片消息（WS 实时），并如实记录「非属主取图 403 → 降级」
  *           这个**已知限制**（task-8 明确：不判 FAIL）
  *   ATT-04  txt 文件卡片：文件名 + 人类可读大小 + 点击下载后字节正确（sha256 比对）
- *   ATT-05  >10MiB 前端预检拦截：出 toast、**不产生任何上传网络请求**
+ *   ATT-05  >50MiB 前端预检拦截：出 toast、**不产生任何上传网络请求**
  *   ATT-06  上传中取消：`.composer__att-x`(title=取消上传) → 上传态清空、无失败 toast
  *   ATT-07  全程无 pageerror；A 侧无 >=400 响应（401 除外）；B 侧的 uploads 403 逐条核对
  *
@@ -460,11 +460,13 @@ async function main() {
   const noteName = `note-${RUN}.txt`
   const bigName = `too-big-${RUN}.txt`
 
-  const photoBuf = makePng(1600, 1200, 17) // ≈1.5–2 MiB：慢到能看见进度，又在 10 MiB 内
+  const photoBuf = makePng(1600, 1200, 17) // ≈1.5–2 MiB：慢到能看见进度，又远在 50 MiB 内
   const thumbBuf = makePng(64, 48, 7) // 小图：第二次发送用，省时
   const noteText = `ATTACH-TXT-${RUN}\n`.repeat(1) + 'x'.repeat(1536 - `ATTACH-TXT-${RUN}\n`.length)
   const noteBuf = Buffer.from(noteText, 'utf8')
-  const bigBuf = Buffer.alloc(10.5 * 1024 * 1024, 0x61) // 10.5 MiB 纯 ASCII
+  // v2.3：普通文件上限从 10 MiB 提到 50 MiB，超限样本必须跟着越过新上限，
+  // 否则「预检拦截」这条会变成一个永远通过的假测试（文件其实合法）。
+  const bigBuf = Buffer.alloc(50.5 * 1024 * 1024, 0x61) // 50.5 MiB 纯 ASCII
 
   const paths = {
     photo: join(tmpDir, photoName),
@@ -858,14 +860,14 @@ async function main() {
       check('点击文件卡片触发下载，且下载字节与上传内容完全一致（sha256 比对）', downloadBytesOk, downloadDetail)
     }
 
-    /* ═══ ATT-05 >10MiB 前端预检：不发网络请求 ═════════════════════ */
-    group('ATT-05 >10MiB 前端预检拦截（必须不产生上传网络请求）')
+    /* ═══ ATT-05 >50MiB 前端预检：不发网络请求 ═════════════════════ */
+    group('ATT-05 >50MiB 前端预检拦截（必须不产生上传网络请求）')
     {
       const postsBefore = uploadPosts.length
       await pickViaComposer(pageA, paths.big)
 
-      const expectMsg = `文件超过 10.0 MB（当前 ${formatBytes(bigBuf.length)}）`
-      const toastShown = await waitToast(pageA, '文件超过 10.0 MB', 8_000)
+      const expectMsg = `文件超过 50.0 MB（当前 ${formatBytes(bigBuf.length)}）`
+      const toastShown = await waitToast(pageA, '文件超过 50.0 MB', 12_000)
       const toastText = await pageA.evaluate(() => {
         const el = [...document.querySelectorAll('.toast__text')].find((e) =>
           (e.textContent || '').includes('文件超过'),

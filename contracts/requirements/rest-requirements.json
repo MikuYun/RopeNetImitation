@@ -656,13 +656,13 @@
         },
         "mimeType": {
           "type": "string",
-          "description": "服务端按魔数嗅探（不信任客户端声明），白名单：image/png、image/jpeg、image/webp、image/gif、video/mp4、video/webm、application/pdf、application/zip、text/plain。"
+          "description": "服务端按魔数嗅探（不信任客户端声明），v2.3 起不再有类型白名单：图片（png/jpeg/webp/gif/bmp/ico/avif）、音频（mp3/aac/wav/flac/ogg/m4a/amr/midi/wma）、视频（mp4/mov 族、webm/mkv 族）、文档（pdf、OLE2 与 OOXML、rtf）、压缩包（zip/rar/7z/gz/bz2/xz/zst/tar/cab）、字体（woff/woff2/otf/ttf）以及严格 UTF-8 文本；认不出的二进制落为 application/octet-stream。仅可执行文件（PE/ELF/Mach-O/Java class）返回 415 UNSUPPORTED_MEDIA_TYPE。"
         },
         "size": {
           "type": "integer",
           "minimum": 1,
           "maximum": 104857600,
-          "description": "图片/文件 1..10485760 字节（10 MiB），视频 1..104857600 字节（100 MiB）；超业务上限回 413 UPLOAD_TOO_LARGE。裸 body 传输层上限约 101 MiB 是给「超限要能回 413 而不是断开」留的余量。"
+          "description": "图片/文件 1..52428800 字节（50 MiB），视频 1..104857600 字节（100 MiB）；超业务上限回 413 UPLOAD_TOO_LARGE。裸 body 传输层上限约 101 MiB 是给「超限要能回 413 而不是断开」留的余量。"
         },
         "sha256": {
           "type": "string",
@@ -2211,7 +2211,7 @@
         "ACCOUNT_BANNED",
         "RATE_LIMITED"
       ],
-      "diff": "v0.1 拟 body {clientMsgId,type,body:{text}} 且统一 201；v0.2 为 {clientMsgId,type?,content?,attachmentId?} 且 200/201 双码。v0.3.0 起彻底改为多附件：删除单数 attachmentId 与 type 字段（服务端按附件 kind 推导 type），新增 attachmentIds（1..9、唯一、视频最多 1 个）与 replyToMsgId；content 在带附件时必填非空白。上传物已被其它消息/帖子引用 → 409 UPLOAD_IN_USE；附件数量超限 → 400 ATTACHMENT_LIMIT。业务上限：图片/文件单个 10 MiB，视频单个 100 MiB。",
+      "diff": "v0.1 拟 body {clientMsgId,type,body:{text}} 且统一 201；v0.2 为 {clientMsgId,type?,content?,attachmentId?} 且 200/201 双码。v0.3.0 起彻底改为多附件：删除单数 attachmentId 与 type 字段（服务端按附件 kind 推导 type），新增 attachmentIds（1..9、唯一、视频最多 1 个）与 replyToMsgId；v2.2 起 content 与附件互不依赖（可只发附件），仅「既无附件也无文字」被拒。上传物已被其它消息/帖子引用 → 409 UPLOAD_IN_USE；附件数量超限 → 400 ATTACHMENT_LIMIT。业务上限：图片/文件单个 50 MiB，视频单个 100 MiB。",
       "frontendContract": "【幂等纪律】(1) 重试必须复用原 clientMsgId、原正文、原 attachmentIds 集合与原 replyToMsgId，绝不能每次重试生成新 id；(2) 同 id 换会话或换内容/换附件集合/换引用目标返回 409 IDEMPOTENCY_CONFLICT，属前端缺陷；(3) REST 返回与 WS message.created 可能先后交错，两条路径都必须经同一套去重（按 msgId + clientMsgId）；(4) 发送走 REST，不存在 WS 发消息 ack 帧；(5) 附件消息流程：逐个 POST /api/v1/uploads 拿 id（可并发），再一次性带 attachmentIds 发消息；上传成功但发消息失败时附件成为孤儿，可重试发消息或 DELETE /api/v1/uploads/{id} 回收（已附着则 409 UPLOAD_IN_USE）；(6) 图片/视频气泡渲染：带 Authorization 头 fetch attachment.url 取 bytes → URL.createObjectURL(blob) → img/video.src，组件卸载时 revokeObjectURL；CSP 的 img-src 已放行 blob:，media-src 已放行 blob:。禁止直接把 attachment.url 填进 src，那会 401；(7) 撤回后服务端广播 message.updated，前端以 recalled/recalledAt 覆盖本地消息并清空附件。"
     },
     {
@@ -2297,7 +2297,7 @@
         "RATE_LIMITED"
       ],
       "diff": "新增端点。不用 multipart/form-data：裸 body 最省依赖也最省解析开销；文件名走 query 而非 Content-Disposition，避免二进制头解析。",
-      "frontendContract": "【上传纪律】(1) 用 axios/fetch 直接把 File 对象当 body 发，headers 只需 Authorization；不要手动设 Content-Type（设了也会被忽略）。(2) 大小上限 10 MiB（10485760 字节），超限返回 413 UPLOAD_TOO_LARGE；裸 body 传输层上限 11 MiB 也是 413，前端按同一分支处理。(3) 类型白名单靠魔数：png/jpeg/webp/gif/pdf/zip/纯文本；其他（如 exe、mp4）返回 415 UNSUPPORTED_MEDIA_TYPE，前端可在选文件时按扩展名预校验以减少无谓请求，但最终以后端判定为准。(4) filename 必须 encodeURIComponent，否则中文名会被截断或 400。(5) 201 返回的 sha256 可用于本地完整性校验；该值只在这一次响应里出现，消息内的 attachment 不含 sha256。(6) 节流 30 次/分/用户。"
+      "frontendContract": "【上传纪律】(1) 用 axios/fetch 直接把 File 对象当 body 发，headers 只需 Authorization；不要手动设 Content-Type（设了也会被忽略）。(2) 大小上限：图片/普通文件 50 MiB（52428800 字节）、视频 100 MiB，超限返回 413 UPLOAD_TOO_LARGE；裸 body 传输层上限 101 MiB 也是 413，前端按同一分支处理。(3) v2.3 起没有类型白名单：服务端按魔数认出具体类型，认不出的二进制落为 application/octet-stream 照常收发；仅可执行文件（PE/ELF/Mach-O/class）返回 415 UNSUPPORTED_MEDIA_TYPE，前端可在选文件时按扩展名预校验以减少无谓请求，但最终以后端判定为准。(4) filename 必须 encodeURIComponent，否则中文名会被截断或 400。(5) 201 返回的 sha256 可用于本地完整性校验；该值只在这一次响应里出现，消息内的 attachment 不含 sha256。(6) 节流 30 次/分/用户。"
     },
     {
       "id": "U5",
@@ -3262,7 +3262,7 @@
       "commentContent": 1000,
       "attachmentsPerMessage": 9,
       "videosPerMessage": 1,
-      "attachmentPerUpload": "图片/文件 10 MiB，视频 100 MiB"
+      "attachmentPerUpload": "图片/文件 50 MiB，视频 100 MiB"
     }
   }
 }

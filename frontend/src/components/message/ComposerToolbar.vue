@@ -144,14 +144,14 @@ const tools: ToolItem[] = [
         <span v-else class="cbar__spinner" aria-hidden="true" />
       </button>
       <!--
-        视频是独立入口（v2 新增）：accept 只列 mp4/webm。
+        视频是独立入口（v2 新增）：accept 为 video/*（v2.3 起放宽）。
         与图片分开的原因同「图片 vs 文件」——用户在系统选择器里要有明确心智：
-        视频上限是 100 MiB 且一条消息只能带 1 个，跟图片的 10 MiB / 9 张不是一回事。
+        视频上限是 100 MiB 且一条消息只能带 1 个，跟图片的 50 MiB / 9 张不是一回事。
       -->
       <button
         class="cbar__btn cbar__btn--video"
         type="button"
-        :title="uploading ? '正在上传…' : '发送视频（MP4 / WebM，≤100 MB）'"
+        :title="uploading ? '正在上传…' : '发送视频（≤100 MB）'"
         :aria-label="uploading ? '正在上传' : '发送视频'"
         :disabled="uploading || disabled"
         @click="emit('pickVideo')"

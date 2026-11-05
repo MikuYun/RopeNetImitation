@@ -12,14 +12,14 @@
  */
 import type { Attachment, AttachmentKind, MessageType } from '@/types/domain'
 
-/** 图片/普通文件上限：10 MiB（与服务端一致）。 */
-export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+/** 图片/普通文件上限：50 MiB（与服务端一致）。 */
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 
 /**
  * 视频上限：100 MiB。
  *
- * 【为什么视频要单独一档】视频天然比图片大一个数量级，把 10 MiB 套在视频上
- * 等于「几乎不能发视频」；而统一放宽到 100 MiB 又会让人把 90 MiB 的 zip 传上去。
+ * 【为什么视频要单独一档】视频天然比图片大一个数量级，把 50 MiB 套在视频上
+ * 会让一部分长视频发不出去；而统一放宽到 100 MiB 又会让人把 90 MiB 的 zip 传上去。
  * 分档是产品与后端的共同约定（docs/v2/API-V2.md §1），前端必须按 kind 分派。
  */
 export const MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024
@@ -29,8 +29,19 @@ export const MAX_ATTACHMENTS = 9
 /** 单条消息最多视频数。 */
 export const MAX_VIDEO_ATTACHMENTS = 1
 
-/** 支持的视频 mime（后端只收这两种容器）。 */
+/**
+ * 视频 mime 提示表。
+ *
+ * 【v2.3 起不再是准入名单】服务端会按魔数嗅探真实容器（mp4/mov 同族都识别成 video/mp4，
+ * mkv/webm 同族识别成 video/webm），前端按 mime 前缀 `video/` 归类即可。
+ * 保留这个常量是为了给「哪些容器浏览器能直接播」留一个显式清单，
+ * 供 AttachmentView 决定渲染 `<video>` 还是降级成下载卡片。
+ */
 export const VIDEO_MIME_TYPES = ['video/mp4', 'video/webm'] as const
+
+/** 可执行文件的扩展名黑名单（与服务端 `blockedExecutableLabel` 呼应，见下方说明）。 */
+const RE_EXECUTABLE_EXT =
+  /\.(exe|msi|msix|dll|sys|com|scr|pif|cpl|jar|apk|ipa|elf|dmg|pkg|deb|rpm|appimage)$/i
 
 const RE_IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|avif)$/i
 const RE_TEXT_EXT =
@@ -55,37 +66,26 @@ export function attachmentKindOf(mimeType: string | undefined | null, name = '')
   const mime = (mimeType || '').toLowerCase()
   if (mime.startsWith('video/')) return 'video'
   if (mime.startsWith('image/')) return 'image'
-  if (!mime && /\.(mp4|webm|mov|m4v)$/i.test(name)) return 'video'
+  if (!mime && /\.(mp4|webm|mov|m4v|mkv|avi)$/i.test(name)) return 'video'
   if (!mime && RE_IMAGE_EXT.test(name)) return 'image'
   // 兜底一律 file：普通文件没有更细的分支，且这是最保守的展示形态
   return 'file'
 }
 
-/** 服务端接受的普通文件类型：pdf / zip / 纯文本。 */
-function isAllowedFileMime(mime: string, name: string): boolean {
-  if (mime === 'application/pdf' || /\.pdf$/i.test(name)) return true
-  if (
-    mime === 'application/zip' ||
-    mime === 'application/x-zip-compressed' ||
-    /\.(zip|rar|7z|gz|tar|tgz|bz2|xz)$/i.test(name)
-  ) {
-    return true
-  }
-  if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml') {
-    return true
-  }
-  // mime 不在白名单但扩展名像纯文本：允许（浏览器对 .md/.log 常给空 mime 或奇怪 mime）
-  return RE_TEXT_EXT.test(name)
-}
-
 /**
  * 上传前校验。
  *
- * 【只做前端能确定的事】体积、空文件、mime 粗筛；**真实类型由服务端按魔数嗅探**，
- * 客户端 mime 不可信，所以这里不做「这是不是真的 png」这种伪校验。
+ * 【v2.3 起不再有类型白名单】以前这里按 pdf/zip/文本三档放行，其余一律拒绝，
+ * 用户拿到的是「仅支持图片、视频（MP4/WebM）、PDF、ZIP 与纯文本」——
+ * 等于一个聊天软件只能发这几种东西。现在前端只拦三件它能确定的事：
+ *   1. 空文件；
+ *   2. 可执行文件（服务端也会按魔数再拦一次，这里靠扩展名先给即时反馈）；
+ *   3. 体积超限。
+ * 真实类型由服务端按魔数嗅探，客户端 mime 不可信，所以这里不做
+ * 「这是不是真的 png」这种伪校验。
  *
- * 【mimeType 可选】既有调用方（以及单测）只传 `{name,size}` —— 缺 mime 时按
- * 普通文件走 10 MiB 档，这样老调用点不会因为多了视频分档而误伤。
+ * 【mimeType 可选】既有调用方（以及单测）只传 `{name,size}`，缺 mime 时按
+ * 普通文件走 50 MiB 档，这样老调用点不会因为多了视频分档而误伤。
  */
 export function checkUploadFile(file: {
   name: string
@@ -98,14 +98,11 @@ export function checkUploadFile(file: {
   }
   const mime = (file.type ?? file.mimeType ?? '').toLowerCase()
   const kind = attachmentKindOf(mime, file.name)
-  if (kind === 'video' && mime && !(VIDEO_MIME_TYPES as readonly string[]).includes(mime)) {
-    return { ok: false, code: 'UNSUPPORTED_TYPE', message: '仅支持 MP4 / WebM 视频' }
-  }
-  if (kind === 'file' && mime && !isAllowedFileMime(mime, file.name)) {
+  if (RE_EXECUTABLE_EXT.test(file.name)) {
     return {
       ok: false,
       code: 'UNSUPPORTED_TYPE',
-      message: '仅支持图片、视频（MP4/WebM）、PDF、ZIP 与纯文本',
+      message: '不支持发送可执行文件，请压缩成 zip 后发送',
     }
   }
   const limit = kind === 'video' ? MAX_VIDEO_UPLOAD_BYTES : MAX_UPLOAD_BYTES
@@ -159,24 +156,62 @@ export function formatBytes(size: number): string {
   return `${text} ${units[unit]}`
 }
 
-/** 附件在 UI 上归到哪一类图标（pdf / zip / text / image / video / other）。 */
-export type AttachmentIconKind = 'pdf' | 'zip' | 'text' | 'image' | 'video' | 'other'
+/**
+ * 附件在 UI 上归到哪一类图标。
+ *
+ * v2.3 起服务端几乎接受任何文件，所以这里按「用户能认出来的大类」分档：
+ * pdf / zip（压缩包）/ text / image / video / audio / doc / sheet / slide / other。
+ */
+export type AttachmentIconKind =
+  | 'pdf'
+  | 'zip'
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'doc'
+  | 'sheet'
+  | 'slide'
+  | 'other'
+
+const RE_ARCHIVE_EXT = /\.(zip|rar|7z|gz|tgz|tar|bz2|xz|zst|cab|iso)$/i
+const RE_DOC_EXT = /\.(docx?|rtf|odt|pages|wps)$/i
+const RE_SHEET_EXT = /\.(xlsx?|csv|ods|numbers|et)$/i
+const RE_SLIDE_EXT = /\.(pptx?|odp|key|dps)$/i
+const RE_AUDIO_EXT = /\.(mp3|wav|flac|ogg|oga|m4a|aac|amr|wma|mid|midi|opus|ape)$/i
 
 export function attachmentIconKind(att: Pick<Attachment, 'mimeType' | 'name'>): AttachmentIconKind {
   const mime = (att.mimeType || '').toLowerCase()
   if (mime.startsWith('image/')) return 'image'
   if (mime.startsWith('video/')) return 'video'
+  if (mime.startsWith('audio/')) return 'audio'
   if (mime === 'application/pdf' || /\.pdf$/i.test(att.name)) return 'pdf'
+  if (mime === 'font/woff' || mime === 'font/woff2' || mime === 'font/otf' || mime === 'font/ttf') return 'other'
+  // Office 家族：OOXML（zip 容器）在服务端会被嗅探成 application/zip，
+  // 所以这里必须先看扩展名，否则 docx 会显示成压缩包图标。
+  if (RE_DOC_EXT.test(att.name)) return 'doc'
+  if (RE_SHEET_EXT.test(att.name)) return 'sheet'
+  if (RE_SLIDE_EXT.test(att.name)) return 'slide'
   if (
     mime === 'application/zip' ||
     mime === 'application/x-zip-compressed' ||
-    /\.(zip|rar|7z|gz|tar|tgz|bz2|xz)$/i.test(att.name)
+    mime === 'application/x-rar-compressed' ||
+    mime === 'application/x-7z-compressed' ||
+    mime === 'application/gzip' ||
+    mime === 'application/x-bzip2' ||
+    mime === 'application/x-xz' ||
+    mime === 'application/zstd' ||
+    mime === 'application/x-tar' ||
+    mime === 'application/vnd.ms-cab-compressed' ||
+    RE_ARCHIVE_EXT.test(att.name)
   ) {
     return 'zip'
   }
+  if (mime === 'application/x-ole-storage' || mime === 'application/rtf') return 'doc'
   if (mime.startsWith('text/') || mime === 'application/json' || mime === 'application/xml') return 'text'
-  // mime 不在白名单（服务端只存白名单内的类型）时退回扩展名判断
+  // mime 认不出（application/octet-stream）时退回扩展名判断
   if (RE_IMAGE_EXT.test(att.name)) return 'image'
+  if (RE_AUDIO_EXT.test(att.name)) return 'audio'
   if (RE_TEXT_EXT.test(att.name)) return 'text'
   return 'other'
 }

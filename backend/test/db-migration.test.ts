@@ -151,21 +151,22 @@ function createV3Database(path: string): DatabaseSync {
   return db;
 }
 
-test('全新空库直接建到 SCHEMA_VERSION，且包含 v4 的全部表与索引', async () => {
+test('全新空库直接建到 SCHEMA_VERSION，且包含 v5 的全部表与索引', async () => {
   await withTempDir(path => {
     const store = new Store(path);
     try {
-      assert.equal(SCHEMA_VERSION, 4);
+      assert.equal(SCHEMA_VERSION, 5);
       assert.equal(userVersion(store.db), SCHEMA_VERSION);
       const tables = names(store.db, 'table');
       for (const table of ['users', 'sessions', 'friend_requests', 'friendships', 'conversations',
         'conversation_members', 'messages', 'uploads', 'message_attachments', 'message_pins', 'ws_tickets',
-        'posts', 'post_attachments', 'post_likes', 'post_comments']) {
+        'posts', 'post_attachments', 'post_likes', 'post_comments', 'stickers']) {
         assert.ok(tables.has(table), `缺少表 ${table}`);
       }
       const indexes = names(store.db, 'index');
       for (const index of ['messages_conversation', 'uploads_owner', 'message_attachments_attachment',
-        'posts_feed', 'posts_author', 'post_attachments_attachment', 'post_comments_feed']) {
+        'posts_feed', 'posts_author', 'post_attachments_attachment', 'post_comments_feed',
+        'stickers_owner', 'stickers_upload']) {
         assert.ok(indexes.has(index), `缺少索引 ${index}`);
       }
       assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
@@ -175,7 +176,7 @@ test('全新空库直接建到 SCHEMA_VERSION，且包含 v4 的全部表与索�
   });
 });
 
-test('v1 老库升到 v4：数据不丢、messages 重建掉 attachment_id、新表就位', async () => {
+test('v1 老库升到 v5：数据不丢、messages 重建掉 attachment_id、新表就位', async () => {
   await withTempDir(path => {
     const legacy = createV1Database(path);
     const messagesBefore = count(legacy, 'SELECT COUNT(*) AS n FROM messages');
@@ -200,7 +201,7 @@ test('v1 老库升到 v4：数据不丢、messages 重建掉 attachment_id、新
   });
 });
 
-test('v3 老库升到 v4：旧 messages.attachment_id 搬进 message_attachments(position=0) 且 type 跟随 kind', async () => {
+test('v3 老库升到 v5：旧 messages.attachment_id 搬进 message_attachments(position=0) 且 type 跟随 kind', async () => {
   await withTempDir(path => {
     createV3Database(path).close();
 
@@ -229,6 +230,48 @@ test('v3 老库升到 v4：旧 messages.attachment_id 搬进 message_attachments
         'm-video', 4, 'c1', 'u2', 'cm4', 'video', 'clip', now);
       store.run('INSERT INTO messages(msg_id, seq, conversation_id, sender_id, client_message_id, type, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
         'm-mixed', 5, 'c1', 'u2', 'cm5', 'mixed', 'mix', now);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+test('v4 老库升到 v5：只补建 stickers 表与索引，其余表结构与数据原封不动', async () => {
+  // 造一个「真实的 v4 库」：先用最新代码建好 v5 库，再手工抹掉 v5 才有的东西并把
+  // user_version 退回 4。除 stickers 表与版本号外，v4 与 v5 的 schema 完全一致，
+  // 所以这个库与线上停在 v4 的库等价。
+  await withTempDir(path => {
+    const built = new Store(path);
+    const schemaBefore = new Map<string, string>();
+    let usersBefore = 0;
+    try {
+      usersBefore = count(built.db, 'SELECT COUNT(*) AS n FROM users');
+      for (const row of built.db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name <> 'stickers'").all() as Array<{ name: string; sql: string }>) {
+        schemaBefore.set(String(row.name), String(row.sql));
+      }
+      built.db.exec('DROP INDEX IF EXISTS stickers_owner; DROP INDEX IF EXISTS stickers_upload; DROP TABLE stickers;');
+      built.db.exec('PRAGMA user_version = 4');
+      assert.equal(userVersion(built.db), 4);
+      assert.ok(!names(built.db, 'table').has('stickers'), '前置条件：这个库应当还没有 stickers 表');
+    } finally {
+      built.close();
+    }
+
+    const store = new Store(path);
+    try {
+      // 版本号必须跟着走到 5，否则老库下一次打开还会重跑 migrate。
+      assert.equal(SCHEMA_VERSION, 5);
+      assert.equal(userVersion(store.db), SCHEMA_VERSION);
+      assert.ok(names(store.db, 'table').has('stickers'), 'v4 老库应自动补建 stickers 表');
+      const indexNames = names(store.db, 'index');
+      assert.ok(indexNames.has('stickers_owner'), '应补建 stickers_owner 索引');
+      assert.ok(indexNames.has('stickers_upload'), '应补建 stickers_upload 索引');
+      // 关键回归：v5 只是新增表，绝不能因为升级而重建老表（重建会丢数据、改 rowid）。
+      for (const [name, sql] of schemaBefore) {
+        assert.equal(tableSql(store.db, name), sql, `老表 ${name} 的表结构不该被改动`);
+      }
+      assert.equal(count(store.db, 'SELECT COUNT(*) AS n FROM users'), usersBefore, '老数据必须原样保留');
+      assert.deepEqual(store.db.prepare('PRAGMA foreign_key_check').all(), []);
     } finally {
       store.close();
     }

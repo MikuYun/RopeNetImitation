@@ -34,6 +34,7 @@
  *     ——「不支持」意味着**原样显示为文本**，绝不做 HTML 解析。
  */
 import { defineComponent, h, onBeforeUnmount, ref, type VNode } from 'vue'
+import { writeClipboardText } from '@/utils/clipboard'
 
 export interface MarkdownRenderOptions {
   /** 代码块复制按钮文案。 */
@@ -51,32 +52,16 @@ const MAX_DEPTH = 6
 
 /* ────────────────────────────── 剪贴板 ────────────────────────────── */
 
-async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    /* 权限被拒 / 非安全上下文：继续走 DOM 兜底 */
-  }
-  try {
-    if (typeof document === 'undefined') return false
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.setAttribute('readonly', '')
-    ta.style.position = 'fixed'
-    ta.style.top = '-1000px'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
-  } catch {
-    return false
-  }
-}
+/**
+ * 代码块复制按钮的剪贴板写入。
+ *
+ * 【为什么只剩这一行转调】task-3 之前这里是**第五份**独立的降级实现
+ * （`navigator.clipboard` → textarea + `execCommand`）。消息气泡的复制按钮
+ * 因为漏了这段降级，在手机内网 http（非安全上下文）下直接失效，用户报障。
+ * 现在降级链唯一收敛在 `@/utils/clipboard`，这里只保留本地别名，
+ * 免得改动下面 `CopyButton` 里的调用点。
+ */
+const writeClipboard = writeClipboardText
 
 /**
  * 代码块右上角的复制按钮。

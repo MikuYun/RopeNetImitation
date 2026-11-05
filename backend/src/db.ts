@@ -7,9 +7,10 @@ import { dirname } from 'node:path';
  * 1 = 旧版（消息只有 text/system）；2 = 支持图片/文件附件（messages.attachment_id + uploads 表）；
  * 3 = 第二轮体验改造（users.uid/role/status/muted_until、群角色、群头像、消息置顶）；
  * 4 = v2 契约：多项附件（message_attachments）、消息撤回/回复（recalled_at/reply_to_msg_id）、
- *     视频消息（uploads.kind 增加 video、messages.type 增加 video/mixed）、广场（posts 系列表）。
+ *     视频消息（uploads.kind 增加 video、messages.type 增加 video/mixed）、广场（posts 系列表）；
+ * 5 = 个人表情包（stickers 表：owner 复用既有 upload，可重复发送）。
  */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * 普通用户 uid 的起始值。管理员固定 1001（见 config.adminUid），
@@ -166,23 +167,39 @@ export class Store {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS post_comments_feed ON post_comments(post_id, created_at);
+      -- v5：个人表情包。表情包不复制文件字节，而是「把自己已有的 upload 收藏成一条可复用的快捷方式」，
+      -- 因此 upload_id 指向 uploads：同一张图只有一份字节、一份元数据，消息里反复引用同一附件 id。
+      -- UNIQUE(owner_id, upload_id) 让重复收藏变成幂等（服务层据此返回 200 而不是 201）。
+      CREATE TABLE IF NOT EXISTS stickers (
+        id TEXT PRIMARY KEY,
+        owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        upload_id TEXT NOT NULL REFERENCES uploads(id) ON DELETE CASCADE,
+        name TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        UNIQUE(owner_id, upload_id)
+      );
+      CREATE INDEX IF NOT EXISTS stickers_owner ON stickers(owner_id, created_at);
+      -- upload 侧索引：上传删除前的「是否被表情包引用」检查与保留策略的孤儿判定都要反查它。
+      CREATE INDEX IF NOT EXISTS stickers_upload ON stickers(upload_id);
     `);
     // 建库语句只描述「最新结构」，且都是 IF NOT EXISTS，所以对已存在的库不产生任何写入。
     // 版本推进交给 migrate()：它读 sqlite_master 里的真实 DDL 判断老库是否需要重建，
-    // 新建库（user_version=0）与老库（user_version=1/2/3）都会走到这里并落到 SCHEMA_VERSION，
+    // 新建库（user_version=0）与老库（user_version=1/2/3/4）都会走到这里并落到 SCHEMA_VERSION，
     // 已升级的库则是纯 no-op —— 这就是「幂等迁移」的含义。
+    // v5 只是新增 stickers 表（上面无条件执行的 CREATE TABLE IF NOT EXISTS 就已经建好了），
+    // 不需要任何数据搬迁；把 user_version 抬到 5 是为了让版本号与真实结构一致。
     this.migrate();
   }
 
   /**
-   * 幂等迁移：把 user_version 1/2/3 的老库升到 4，不丢数据。
+   * 幂等迁移：把 user_version 1/2/3/4 的老库升到 5，不丢数据。
    *
    * 四件事：
    * 1. messages 重建到 v4 形态（多附件 / 撤回 / 回复 / type 增加 video+mixed），
    *    并把老的 attachment_id 数据搬进 message_attachments（position=0）；
    * 2. uploads.kind 的 CHECK 从 image|file 扩到 image|video|file（SQLite 改不了 CHECK，只能重建表）；
    * 3. users/conversations/conversation_members 补 v3 的新列，并为既有用户回填 uid、为群主回填 role；
-   * 4. 把 user_version 落到 SCHEMA_VERSION。
+   * 4. 把 user_version 落到 SCHEMA_VERSION（v5 仅新增 stickers 表，已由构造函数建好，无数据搬迁）。
    *
    * 全部包在一个事务里：中途失败就整体回滚，不会留下「列加了但版本没升」的半套结构
    * （那种状态最危险：下次启动会因为列已存在而跳过，但数据没回填）。

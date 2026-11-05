@@ -198,8 +198,9 @@ export class Realtime {
    * BE-01 保留策略：显式、可配置、可观测。
    * - sessions / ws_tickets：过期即删（保留语义不变，仅从心跳里抽出为独立可调用方法）。
    * - messages：仅当 RETENTION_MESSAGE_DAYS > 0 时按 created_at 删除，默认 0 = 永不删除。
-   * - uploads：与 messages 用同一条保留期。只清「没有任何消息引用」且已过期的上传，
+   * - uploads：与 messages 用同一条保留期。只清「没有任何消息/帖子/表情包引用」且已过期的上传，
    *   被消息引用的上传归消息生命周期管（消息删了才会变成孤儿，下一轮再清）。
+   *   v5 起表情包也算引用：用户收藏的表情包不该因为「没发过消息」就被保留策略清掉。
    * - 每次清理返回条数并由调用方写日志；服务启动时会先跑一次（app.ts），因此重启后也能收敛。
    */
   sweep(trigger: 'startup' | 'interval' | 'manual' = 'manual'): SweepReport {
@@ -222,7 +223,9 @@ export class Realtime {
         WHERE created_at <= ? AND NOT EXISTS (
           SELECT 1 FROM message_attachments WHERE message_attachments.attachment_id = uploads.id)
         AND NOT EXISTS (
-          SELECT 1 FROM post_attachments WHERE post_attachments.attachment_id = uploads.id)`, cutoff);
+          SELECT 1 FROM post_attachments WHERE post_attachments.attachment_id = uploads.id)
+        AND NOT EXISTS (
+          SELECT 1 FROM stickers WHERE stickers.upload_id = uploads.id)`, cutoff);
       for (const orphan of orphans) {
         // 先删库再删文件：进程在两步之间崩溃时只会剩一个孤儿文件，下一轮 sweep 会再试；
         // 反过来（先删文件）则会留下「库里有记录、文件已没了」的坏记录，GET 只会 404，更糟。

@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
+import { hasVisibleMenuItems, visibleMenuItems, type ContextMenuItem } from '@/utils/contextMenu'
 
 /* ============================================================================
  * 主题系统
@@ -361,6 +362,16 @@ export const useUiStore = defineStore('ui', () => {
   const logoutConfirmOpen = ref(false)
 
   /**
+   * 全局唯一的右键菜单。null = 关闭。
+   *
+   * 【为什么状态在 store 而不是组件里】菜单是**单例**：页面上任何位置都可能
+   * 弹它（页面空白处、图片、消息气泡），若每个组件各持一份 ref，就会出现两层
+   * 菜单同时出现、或「点关闭只关了自己那份」。收敛到 store 后，打开新的必然
+   * 替换旧的（天然互斥），且 Esc/滚动/点击外部统一关闭一处即可。
+   */
+  const contextMenu = ref<{ x: number; y: number; items: ContextMenuItem[] } | null>(null)
+
+  /**
    * 会话草稿。convId -> 未发送文本。
    *
    * 【为什么放在 store 而不是组件里】手机端列表与正文**互斥渲染**：
@@ -509,6 +520,28 @@ export const useUiStore = defineStore('ui', () => {
     logoutConfirmOpen.value = false
   }
 
+  /* ── 右键菜单 ──────────────────────────────────────────────── */
+
+  /**
+   * 在视口坐标 (x, y) 打开菜单。
+   *
+   * 过滤 hidden 后就空的话**直接不开** —— 弹一个空白小方块比不弹更让人困惑
+   * （用户会以为界面卡住了）。坐标是鼠标的 clientX/clientY，具体落点由
+   * `AppContextMenu` 量完真实尺寸再用 `clampMenuPosition` 校正（这里不预判尺寸，
+   * 因为菜单项文案决定宽高，估出来的值会导致贴边处跳动）。
+   */
+  function openContextMenu(x: number, y: number, items: ContextMenuItem[]): void {
+    if (!hasVisibleMenuItems(items)) {
+      contextMenu.value = null
+      return
+    }
+    contextMenu.value = { x, y, items: visibleMenuItems(items) }
+  }
+
+  function closeContextMenu(): void {
+    contextMenu.value = null
+  }
+
   return {
     theme,
     themeMode,
@@ -521,6 +554,7 @@ export const useUiStore = defineStore('ui', () => {
     profileDrawerOpen,
     profileDrawerStage,
     logoutConfirmOpen,
+    contextMenu,
     drafts,
     applyTheme,
     setTheme,
@@ -541,5 +575,7 @@ export const useUiStore = defineStore('ui', () => {
     setProfileDrawerStage,
     openLogoutConfirm,
     closeLogoutConfirm,
+    openContextMenu,
+    closeContextMenu,
   }
 })

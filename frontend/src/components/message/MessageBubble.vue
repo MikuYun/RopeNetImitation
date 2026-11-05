@@ -61,12 +61,35 @@
  *    点击它要跳回原消息，键盘用户必须能 Tab 到并回车触发；用 div + @click
  *    等于对键盘用户隐藏该功能。同理 aria-label 里带上被引用者名字。
  *
+ * ─────────────────────────────────────────────────────────────────────
+ * 【task-3：移动端长按「复制」失败的三处修复】
+ *
+ * 用户报障：手机上长按消息点「复制正文」提示失败。三条原因叠加，缺一修不好：
+ *
+ *  a) `navigator.clipboard` 在**非安全上下文**根本不存在。手机通过
+ *     `http://<局域网IP>:5173` 访问时 `window.isSecureContext === false`，
+ *     `navigator.clipboard` 是 `undefined` —— 直接 `await navigator.clipboard
+ *     .writeText(...)` 在**取值那一刻**就抛 TypeError。现在统一走
+ *     `@/utils/clipboard` 的 `writeClipboardText()`（含 textarea + execCommand
+ *     降级），与 markdown 代码块 / 分享链接 / UID 复制共用同一份实现。
+ *
+ *  b) 原生长按选区被我们自己夺走。安卓 Chrome 长按会产生原生选区 + 系统
+ *     「复制/全选」菜单；我们的 `@contextmenu` 无条件 `preventDefault()` +
+ *     弹 AppModal（带焦点陷阱），结果两边都用不了。现在只要
+ *     `hasActiveTextSelection()` 为真就把事件**完全让给系统**。
+ *
+ *  c) 选区还会被 500ms 长按定时器打散 —— 同一个判定也放在定时器回调里。
+ *
+ * 另外菜单新增「选择文本」：就算 Clipboard API 彻底不可用，用户也能拿到
+ * **系统原生选区 + 系统复制柄**，这是最后一条保底通路。
+ *
+ *
  * 保留全部既有类名（`.sys`、`.line`、`.line--mine`、`.line--peer`、
  * `.line__avatar`、`.line__col`、`.line__sender`、`.bubble`、`.bubble--mine`、
  * `.bubble--peer`、`.bubble--attach`、`.bubble__text`、`.bubble__att`、
  * `.line__meta`、`.line__time`）—— e2e 依赖它们，一个都不能删。
  */
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import AppAvatar from '@/components/base/AppAvatar.vue'
 import AppIcon from '@/components/base/AppIcon.vue'
 import AppModal from '@/components/base/AppModal.vue'
@@ -74,6 +97,8 @@ import AttachmentView from '@/components/message/AttachmentView.vue'
 import MarkdownView from '@/components/message/MarkdownView.vue'
 import MessageStatusIcon from '@/components/message/MessageStatusIcon.vue'
 import { useUiStore } from '@/stores/ui'
+import { useStickerStore } from '@/stores/sticker'
+import { isStickerMime } from '@/api/stickers'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { hasMarkdownSyntax } from '@/utils/markdown'
 import { downloadAttachment } from '@/api/uploads'
@@ -81,11 +106,14 @@ import {
   LONG_PRESS_MS,
   canRecallMessage,
   createLongPress,
+  hasActiveTextSelection,
   messageMenuItems,
   shouldOpenMessageMenu,
 } from '@/components/message/messageMenu'
 import type { Attachment, LocalMessage, ConversationType } from '@/types/domain'
 import { formatBubbleTime } from '@/utils/datetime'
+import { CLIPBOARD_FALLBACK_HINT, writeClipboardText } from '@/utils/clipboard'
+import { hasVisibleMenuItems, type ContextMenuItem } from '@/utils/contextMenu'
 
 const props = defineProps<{
   message: LocalMessage
@@ -127,6 +155,7 @@ const emit = defineEmits<{
 }>()
 
 const ui = useUiStore()
+const stickerStore = useStickerStore()
 const { isMobile } = useBreakpoint()
 
 const isSystem = computed(() => props.message.type === 'system')
@@ -162,6 +191,52 @@ const firstFileAttachment = computed<Attachment | null>(() => {
   return attachments.value.find((a) => a.kind === 'file') ?? attachments.value[0] ?? null
 })
 const hasFileAttachment = computed(() => attachments.value.some((a) => a.kind === 'file'))
+
+/* ── 存为表情（v2.4） ─────────────────────────────────────────── */
+
+/**
+ * 这条消息里第一张**能当表情**的图片。
+ *
+ * 为什么只认图片、且只认 png/jpeg/webp/gif：后端 `POST /api/v1/stickers`
+ * 的白名单就是这四个 MIME（其它图片格式一律 400 UNSUPPORTED_STICKER_TYPE）。
+ * 前端先卡一次，是为了不把注定失败的按钮摆给用户 —— 视频和普通文件本来
+ * 也不可能是表情。
+ */
+const stickerAttachment = computed<Attachment | null>(() => {
+  return (
+    attachments.value.find((a) => a.kind === 'image' && isStickerMime(a.mimeType)) ?? null
+  )
+})
+
+/** 已撤回/系统消息没有可保存的图；乐观未发送的消息附件 id 服务端还不认。 */
+const canSaveSticker = computed(
+  () =>
+    !isSystem.value &&
+    !recalled.value &&
+    props.message.status === 'sent' &&
+    stickerAttachment.value !== null,
+)
+
+/**
+ * 把这条消息的图片存为自己的表情。
+ *
+ * 【为什么用 uploadId 而不是附件 id】两者在既有数据里其实是同一个值
+ * （附件的 `id` 就是 uploadId），但契约里 `POST /stickers` 的字段叫 uploadId，
+ * 这里显式传 `a.id`（= uploadId）并留注释，避免以后有人当成「表情记录 id」。
+ *
+ * 失败 toast 是必须的：后端还没上线时会 404，用户点了没反应会以为按钮坏了。
+ */
+async function saveSticker(): Promise<void> {
+  closeMenu()
+  const att = stickerAttachment.value
+  if (!att) return
+  try {
+    await stickerStore.add(att.id)
+    ui.toast('已保存到表情包', 'success')
+  } catch (e) {
+    ui.toast(`保存失败：${(e as { message?: string }).message ?? '请稍后重试'}`, 'error')
+  }
+}
 
 /* ── 引用回复 ─────────────────────────────────────────────────── */
 
@@ -227,7 +302,16 @@ const msgId = computed(() => props.message.msgId || props.message.localId)
  */
 const menuOpen = ref(false)
 
+/**
+ * 500ms 长按计时器。
+ *
+ * 【task-3 关键修正】回调里必须先判选区：安卓 Chrome 的长按在 500ms 前后
+ * 就会开始生成原生选区，若此时我们照旧弹 AppModal，焦点陷阱会把选区打散，
+ * 用户既拿不到系统「复制」也拿不到我们的菜单。已有非空选区 = 用户正在
+ * 用系统方式选文本 → 这次长按不作为操作菜单的入口。
+ */
 const longPress = createLongPress(() => {
+  if (hasActiveTextSelection()) return
   openMenu()
 }, LONG_PRESS_MS)
 
@@ -247,9 +331,119 @@ function onTouchEnd(): void {
 
 function onContextMenu(e: MouseEvent): void {
   // 移动端：接管长按（原生菜单会与我们的操作菜单打架）
-  if (!shouldOpenMessageMenu(isSystem.value, isMobile.value)) return
+  if (shouldOpenMessageMenu(isSystem.value, isMobile.value)) {
+    // 【task-3】已经有非空选区时**整个让给系统**：安卓 Chrome 长按气泡会先
+    // 生成原生选区，随后触发 contextmenu；此时 preventDefault 会让系统的
+    // 「复制/全选」菜单永远不出现，而我们的 AppModal 焦点陷阱又会让选区失效。
+    // 返回（不 preventDefault）→ 浏览器照常弹系统菜单，用户能正常复制。
+    // 想用我们的菜单，先点一下空白处清掉选区即可。
+    if (hasActiveTextSelection()) return
+    e.preventDefault()
+    openMenu()
+    return
+  }
+
+  // ── 桌面端：右键 = 消息专属菜单（v2.4） ──────────────────────────
+  // 【为什么桌面也要自己接管】在此之前桌面右键冒泡到 window，被 `App.vue`
+  // 的全局处理器拦成**项目级默认菜单**（刷新页面 / 复制页面链接 / 回到顶部 /
+  // 切换深浅色）。用户在一条消息上右键，想复制的是那条消息、想存的是那张图，
+  // 结果看到的是「刷新页面」，等于右键在聊天区里没有意义。
+  //
+  // 【为什么要 stopPropagation】`App.vue` 已经用 `defaultPrevented` 让位，
+  // 但那是**唯一**的依据：一旦将来有人在中间插一层预览/手势组件重新
+  // `dispatchEvent`，冒泡链路就会变。这里显式掐断，语义上也更准确 ——
+  // 事件已被本组件消费完。
+  if (isSystem.value || recalled.value) return
+  // 桌面同理：已有非空选区时，用户右键九成是想「复制选中的这段」，
+  // 让浏览器原生菜单出来（它的「复制」对选区最可靠，也不依赖 https）。
+  if (hasActiveTextSelection()) return
+  const items = messageContextMenuItems()
+  if (!hasVisibleMenuItems(items)) return
   e.preventDefault()
-  openMenu()
+  e.stopPropagation()
+  ui.openContextMenu(e.clientX, e.clientY, items)
+}
+
+/**
+ * 桌面右键菜单项。
+ *
+ * 【为什么不在这里重写一遍出现条件】顺序与条件全部来自 `menuItems`（即
+ * `messageMenu.ts` 的纯函数），这里只做「id → 文案 + 动作」的映射。
+ * 若两边各写一套 `canXxx`，迟早会出现「长按菜单有、右键没有」或反过来的
+ * 漂移；而 `menuItems` 已经被单测钉住（见 messageMenu.test.ts）。
+ *
+ * 【为什么用 switch 而不是一条 id→节点的字典】字典要求 id 全集一次性对齐，
+ * 联合类型新增成员时 TS 不会报错、只是悄悄漏掉一项（task-3 就要加
+ * `'select-text'`）。switch 只处理认识的 id，不认识的自然跳过，不会崩。
+ */
+function messageContextMenuItems(): ContextMenuItem[] {
+  const out: ContextMenuItem[] = []
+  for (const id of menuItems.value) {
+    switch (id) {
+      case 'copy':
+        out.push({ id, label: '复制正文', hint: '纯文本', run: menuCopy })
+        break
+      case 'select-text':
+        // 【task-3】copy 的兜底通路：不经过 Clipboard API，直接把正文节点
+        // 变成一个**原生选区**，让系统自己的复制柄/菜单接手。手机内网 http
+        // 下 Clipboard API 完全不可用时，这是唯一还能把文字带出 App 的路。
+        out.push({
+          id,
+          label: '选择文本',
+          hint: '用系统菜单复制',
+          run: selectBubbleText,
+        })
+        break
+      case 'reply':
+        out.push({ id, label: '回复', hint: '引用这条消息', run: menuReply })
+        break
+      case 'toggle-source':
+        out.push({
+          id,
+          label: renderMode.value === 'source' ? '看渲染效果' : '看 Markdown 源码',
+          run: menuToggleSource,
+        })
+        break
+      case 'toggle-pin':
+        out.push({
+          id,
+          label: props.pinned === true ? '取消置顶' : '置顶消息',
+          run: togglePin,
+        })
+        break
+      case 'download-attachment':
+        out.push({
+          id,
+          label: '下载附件',
+          hint: firstFileAttachment.value?.name,
+          // 与长按菜单的 `v-if="... && hasFileAttachment"` 完全对齐：只有文件类
+          // 附件才有「下载」。纯图片/视频消息里这一项必须隐藏而不是灰显 ——
+          // 媒体的保存入口在附件自己身上（右键图片有「保存图片」），
+          // 摆一个永远点不亮的灰项只会让用户以为功能坏了。
+          hidden: !hasFileAttachment.value,
+          run: menuDownload,
+        })
+        break
+      case 'save-sticker':
+        out.push({
+          id,
+          label: '存为表情',
+          hint: stickerAttachment.value?.name,
+          run: saveSticker,
+        })
+        break
+      case 'recall':
+        out.push({
+          id,
+          label: '撤回',
+          hint: '2 分钟内可撤回',
+          danger: true,
+          run: menuRecall,
+        })
+        break
+    }
+  }
+  return out
 }
 
 function openMenu(): void {
@@ -308,6 +502,7 @@ const menuItems = computed(() =>
     canToggle: canToggleSource.value,
     pinned: props.pinned === true,
     hasAttachment: hasAttachments.value,
+    canSaveSticker: canSaveSticker.value,
     canRecall: canRecall.value,
   }),
 )
@@ -315,20 +510,62 @@ const menuItems = computed(() =>
 const copyState = ref<'idle' | 'done' | 'failed'>('idle')
 let copyTimer: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * 正文节点的 ref —— 「选择文本」要拿它做 `selectNodeContents`。
+ *
+ * 【为什么必须拿真实 DOM 节点】`window.getSelection()` 只能围绕**文本节点**
+ * 建选区，而正文是 `<MarkdownView>` 渲染出的一整棵 VNode 树（段落/列表/代码块），
+ * 内部结构随 Markdown 语法变化。`createRange().selectNodeContents(el)` 能一次
+ * 圈住整棵子树，不必逐个文本节点拼 range。
+ */
+const textEl = ref<HTMLElement | null>(null)
+
+/**
+ * 复制正文（桌面 hover 工具条 / 长按菜单「复制正文」）。
+ *
+ * 【task-3】改用共享的 `writeClipboardText()`：它在非安全上下文（手机走
+ * `http://<局域网IP>:5173`）会退到 textarea + `execCommand('copy')`。
+ * 此前这里直接 `navigator.clipboard.writeText`，内网 http 下 clipboard 是
+ * undefined，一点就抛 → 用户看到「复制失败」—— 就是被报的那个 bug。
+ */
 async function copyContent(): Promise<void> {
   if (!hasText.value) return
-  try {
-    // clipboard 在非安全上下文/无权限时会抛；降级提示不让按钮静默无反应
-    await navigator.clipboard.writeText(props.message.content)
-    copyState.value = 'done'
-  } catch {
-    copyState.value = 'failed'
-    ui.toast('复制失败，请手动选择文本', 'error')
-  }
+  const ok = await writeClipboardText(props.message.content)
+  copyState.value = ok ? 'done' : 'failed'
+  if (!ok) ui.toast(CLIPBOARD_FALLBACK_HINT, 'error')
   if (copyTimer) clearTimeout(copyTimer)
   copyTimer = setTimeout(() => {
     copyState.value = 'idle'
   }, 1600)
+}
+
+/**
+ * 选择文本：把正文变成一个**系统原生选区**。
+ *
+ * 【为什么不直接复制】这条通路专门用于 Clipboard API 不可用的场景。
+ * 建立选区后，安卓/iOS 会就地弹出系统「复制/全选」菜单，桌面端用户也可以
+ * 直接 Ctrl+C —— 全程不碰 clipboard 权限，因此不受非安全上下文限制。
+ *
+ * 时序很关键：必须先 `closeMenu()` 再等 `nextTick`。AppModal 开着时有焦点陷阱，
+ * 且关闭时会 `restoreFocus()` 把焦点还给原元素 —— 在弹层还挂着的时候选区会被
+ * 元素的 focus 抢走（安卓上表现为选区一闪就没）。等 DOM 更新完再做选区最稳。
+ */
+async function selectBubbleText(): Promise<void> {
+  closeMenu()
+  await nextTick()
+  const el = textEl.value
+  if (!el) return
+  try {
+    const range = document.createRange()
+    range.selectNodeContents(el)
+    const sel = window.getSelection()
+    if (!sel) return
+    sel.removeAllRanges()
+    sel.addRange(range)
+  } catch {
+    // 极少数环境（无 Selection API 的旧 WebView）会抛；此时退回复制，至少给条路
+    void copyContent()
+  }
 }
 
 function toggleSource(): void {
@@ -483,7 +720,8 @@ watch(
             />
 
             <!-- 正文：Markdown → VNode 树。**永不** v-html。 -->
-            <div v-if="hasText" class="bubble__text">
+            <!-- ref 供「选择文本」做 selectNodeContents（见 selectBubbleText） -->
+            <div v-if="hasText" ref="textEl" class="bubble__text">
               <MarkdownView :source="message.content" :render-mode="renderMode" />
             </div>
 
@@ -591,6 +829,31 @@ watch(
                 <path d="M12 12.5V21" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" />
               </svg>
             </button>
+            <!--
+              存为表情（v2.4）：只在「消息带一张 png/jpeg/webp/gif 图片」时出现。
+              放在工具条最右：它是低频动作，不能挤占复制/回复的位置。
+            -->
+            <button
+              v-if="canSaveSticker"
+              class="bubble__tool"
+              type="button"
+              title="存为表情"
+              aria-label="存为表情"
+              @click="saveSticker"
+            >
+              <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+                <circle cx="9" cy="10" r="1.1" fill="currentColor" />
+                <circle cx="15" cy="10" r="1.1" fill="currentColor" />
+                <path
+                  d="M8.2 14.1c.95 1.3 2.25 1.95 3.8 1.95s2.85-.65 3.8-1.95"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.6"
+                  stroke-linecap="round"
+                />
+              </svg>
+            </button>
           </div>
         </div>
 
@@ -631,6 +894,20 @@ watch(
           <span class="sheet__label">复制正文</span>
           <span class="sheet__hint">纯文本</span>
         </button>
+        <!--
+          选择文本（task-3）：复制失败时的兜底通路。不经过 Clipboard API，
+          直接把正文变成系统原生选区 —— 手机内网 http 下 Clipboard API 完全
+          不可用时，这是唯一能把文字复制出去的路。
+        -->
+        <button
+          v-if="menuItems.includes('select-text')"
+          class="sheet__item"
+          type="button"
+          @click="selectBubbleText"
+        >
+          <span class="sheet__label">选择文本</span>
+          <span class="sheet__hint">用系统菜单复制</span>
+        </button>
         <button v-if="menuItems.includes('reply')" class="sheet__item" type="button" @click="menuReply">
           <span class="sheet__label">回复</span>
           <span class="sheet__hint">引用这条消息</span>
@@ -656,6 +933,20 @@ watch(
         >
           <span class="sheet__label">下载附件</span>
           <span class="sheet__hint">{{ firstFileAttachment?.name }}</span>
+        </button>
+        <!--
+          存为表情（v2.4）：菜单项位置由 messageMenu.ts 决定（下载之后、撤回之前）。
+          这里再判一次 canSaveSticker，是因为 `menuItems` 只是标识清单，
+          真正的「哪张图」由组件算 —— 两者必须一致，否则会出现点了没反应的空项。
+        -->
+        <button
+          v-if="menuItems.includes('save-sticker') && canSaveSticker"
+          class="sheet__item"
+          type="button"
+          @click="saveSticker"
+        >
+          <span class="sheet__label">存为表情</span>
+          <span class="sheet__hint">{{ stickerAttachment?.name }}</span>
         </button>
         <button
           v-if="menuItems.includes('recall')"
@@ -786,6 +1077,19 @@ watch(
   font-size: 14px;
   line-height: 1.55;
   max-width: 100%;
+  /*
+   * 【为什么显式写 user-select:text（task-3）】
+   * 浏览器默认值虽然是 text，但它是**继承**属性：只要任何一个祖先容器为了
+   * 拖拽/滚动优化写了 `user-select: none`，气泡里的文字就会变得无法选中 ——
+   * 表现就是「长按没有任何反应」，而这条链上的祖先往往在别的组件里、改起来
+   * 影响面很大。这里就地钉死，把「能否选中正文」变成气泡自己的契约。
+   * 这也是移动端「选择文本 / 系统复制柄」通路能工作的前提。
+   *
+   * 注意**不要**加 `-webkit-touch-callout: none`：那会禁掉 iOS 的长按系统菜单，
+   * 正好把我们要交给用户的那条兜底通路也堵死。
+   */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .bubble--mine {
   background: var(--bubble-self-bg);
@@ -861,6 +1165,14 @@ watch(
   min-width: 0;
   /* Markdown 自己负责换行；pre-wrap 会让列表/代码块的缩进和空行叠加 */
   white-space: normal;
+  /*
+   * 【task-3】`user-select` 是**继承**属性。`.bubble` 上写了 text 还不够：
+   * 正文外面若再套一层容器（`.bubble__text`）并因为别的原因继承了 none，
+   * 长按就会毫无反应。两层都钉死，等于给「正文可选」上了双保险 ——
+   * 这是移动端走「选择文本 → 系统复制柄」这条兜底通路的前提。
+   */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 .bubble__att {

@@ -469,6 +469,36 @@ export function registerRoutes(instance: FastifyInstance, store: Store, service:
   }, async request => service.adminStats(identity(request).userId));
 
   /*
+   * v5 个人表情包。
+   *
+   * 表情包不是「再传一份文件」，而是把自己已有的 upload 收藏成一条可复用的快捷方式：
+   * 因此这里没有上传接口，POST 只收 uploadId。放在上传插件作用域**之外**是有意的 ——
+   * 这三个接口都是普通 JSON，若放进作用域内会被通配 buffer parser 接管，body 变成裸 Buffer。
+   */
+  app.get('/api/v1/stickers', {
+    schema: { ...secured('Stickers', '获取本人的表情包列表，按收藏时间倒序'),
+      querystring: Type.Object(pageQuery, { additionalProperties: false }),
+      response: { 200: Schema.StickersResult, ...Schema.ErrorResponses } },
+  }, async request => service.listStickers(identity(request).userId, request.query.limit, request.query.offset));
+
+  app.post('/api/v1/stickers', {
+    // 收藏是高频轻量操作，但仍是写接口；30/min 与上传同档，足以挡住脚本刷。
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+    schema: { ...secured('Stickers', '把本人的一张图片上传收藏为表情包（重复收藏幂等）'), body: Schema.StickerBody,
+      // 201 = 首次收藏；200 = 已收藏过，返回同一个表情包对象（幂等）。
+      response: { 200: Schema.Sticker, 201: Schema.Sticker, ...Schema.ErrorResponses } },
+  }, async (request, reply) => {
+    const result = service.createSticker(identity(request).userId, request.body.uploadId);
+    return reply.code(result.created ? 201 : 200).send(result.sticker);
+  });
+
+  app.delete('/api/v1/stickers/:stickerId', {
+    schema: { ...secured('Stickers', '删除本人的表情包（若该图片已无任何引用，连带清理上传文件）'),
+      params: Schema.StickerIdParams,
+      response: { 200: Schema.Success, ...Schema.ErrorResponses } },
+  }, async request => service.deleteSticker(request.params.stickerId, identity(request).userId));
+
+  /*
    * 上传接口：单独开一个封装插件作用域。
    * fastify 的每个插件实例持有独立的 content type parser 副本（plugin-override.js），
    * 因此这里的通配 parser 只影响本作用域内的路由，全局 64KiB 的 JSON 契约完全不动 ——

@@ -55,7 +55,51 @@
 - 引用回复：`replyTo` 非空时气泡顶部渲染引用条（`senderName：preview`，点击滚动定位到原消息）。
 - 输入框：正文与附件互不依赖 —— 可只发附件、也可图文同条；只有「既无正文又无附件」时按钮 disabled。有附件时 Enter 不发送（防误发，必须点发送按钮或 Ctrl/⌘+Enter）。
 
-## 6. 图标
+## 6. 表情包（v2.4）
+
+- 新增接口层 `frontend/src/api/stickers.ts`：`Sticker`、`normalizeSticker()`、`isStickerMime()`、
+  **`stickerToAttachment(sticker): Attachment`（id 取 `uploadId`）**、`listStickers` / `addSticker` / `deleteSticker`。
+- `frontend/src/stores/sticker.ts`：epoch 代际保护（不依赖 `auth.ts` 挂 reset），对外
+  `ensureLoaded(force)` / `refresh()` / `add(uploadId)` / `remove(id)` / `resetFor(userId)` / `hasUpload()` / `findById()`。
+- 面板 `components/message/StickerPanel.vue`（`section.sp[aria-label="表情包"]`）：桌面 4 列 / ≤767px 5 列，
+  每格 1:1 `object-fit: contain`、≤360×320；每格删除按钮 `aria-label="删除表情 <name>"`（AppModal 二次确认）；
+  图片一律走 blob URL（按 `uploadId` 缓存 + `onUnmounted` 全 revoke），**不得直接塞 `<img src>`**。
+- 工具条 `ComposerToolbar.vue` 新增 `.cbar__btn--sticker`（`aria-label` 在「表情包」/「收起表情包」间切换，
+  `aria-expanded`、手机 44×44），emit **`toggleStickers`**（开/关语义）。
+- 点表情 → `emit('send', {content:'', attachments:[stickerToAttachment(s)], replyToMsgId:null})`，
+  走既有发送通道，不绕过 `buildSendInput`；失败 toast 且面板保持打开；切会话自动收面板。
+- 保存入口：桌面气泡悬浮工具条 `button[aria-label="存为表情"]` + 长按 sheet `save-sticker` 项 +
+  桌面右键菜单 `save-sticker` 项。判定 = 消息带至少一个 png/jpeg/webp/gif 图片附件。
+
+## 7. 项目自有右键菜单（v2.4）
+
+- 纯逻辑层 `frontend/src/utils/contextMenu.ts`：`ContextMenuItem`、`clampMenuPosition()`、
+  `shouldKeepNativeMenu()`、`visibleMenuItems()`、`hasVisibleMenuItems()`、`copyTextToClipboard()`（转调 clipboard 工具）。
+- store：`ui.contextMenu`、`ui.openContextMenu(x, y, items)`、`ui.closeContextMenu()`。
+- 渲染单例 `components/base/AppContextMenu.vue`，挂在 `App.vue`：
+  `.ctx-menu[role="menu"][aria-label="操作菜单"]`，项 `button.ctx-menu__item[role="menuitem"][data-id]`，
+  危险项 `is-danger`、禁用 `is-disabled` + `aria-disabled="true"`。
+- 全局兜底 `App.vue` 的 `window` 级 `contextmenu` 监听：`defaultPrevented` 让位子组件 →
+  `e.shiftKey` 放行原生 → `shouldKeepNativeMenu(target)` 对 input/textarea/select/contenteditable 放行原生 →
+  否则 `preventDefault` + 弹默认菜单（`refresh` / `copy-link` / `top` / `theme`）。
+- 子组件自行接管：消息气泡（`copy` / `select-text` / `reply` / `toggle-source` / `toggle-pin` /
+  `download-attachment` / `save-sticker` / `recall`）、图片附件（`save-media` / `copy-media-url`）。
+- **新增菜单 id 时注意**：`MessageBubble.vue` 的 `messageContextMenuItems()` 用 `switch (id)` 映射，
+  联合类型新增成员 TS **不会**报未处理分支 —— 必须手动补 `case`，否则该项静默消失。
+
+## 8. 剪贴板（v2.4）
+
+- 全仓唯一实现 `frontend/src/utils/clipboard.ts`：`writeClipboardText(text): Promise<boolean>`。
+  先试 `navigator.clipboard?.writeText`，不存在/抛错则 `textarea + document.execCommand('copy')` 兜底。
+  `grep -rn "execCommand" src/` 只应有 1 处真实调用。
+- 手机用 `http://<局域网IP>` 访问时 `isSecureContext === false`、`navigator.clipboard` 为 `undefined`，
+  任何「直接 await navigator.clipboard」的写法在该场景必然失败 —— 一律走该工具。
+- 气泡文本可选中：`.bubble` 与 `.bubble__text` 显式 `user-select: text`；**禁止**加
+  `-webkit-touch-callout: none`（会堵死 iOS 系统菜单）。
+- 已有非空选区时，`contextmenu` 与长按定时器都让给系统（`hasActiveTextSelection()`），
+  并在菜单里提供「选择文本」作为 Clipboard API 全不可用时的保底通路。
+
+## 9. 图标
 
 `components/base/AppIcon.vue` 由 Lead 统一新增。新增图标名清单（其他 agent 直接用）：
 `compass`、`image`、`video`、`play`、`heart`、`heart-filled`、`comment`、`send`、`palette`、

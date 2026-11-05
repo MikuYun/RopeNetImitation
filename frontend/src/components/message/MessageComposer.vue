@@ -49,6 +49,9 @@ import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
 import AppIcon from '@/components/base/AppIcon.vue'
 import ComposerToolbar from '@/components/message/ComposerToolbar.vue'
 import MarkdownView from '@/components/message/MarkdownView.vue'
+import StickerPanel from '@/components/message/StickerPanel.vue'
+import { useStickerStore } from '@/stores/sticker'
+import { stickerToAttachment, type Sticker } from '@/api/stickers'
 import { useUiStore } from '@/stores/ui'
 import { useBreakpoint } from '@/composables/useBreakpoint'
 import { wsClient } from '@/ws/client'
@@ -87,6 +90,16 @@ const emit = defineEmits<{
 
 const ui = useUiStore()
 const { isMobile } = useBreakpoint()
+
+/**
+ * 表情包（v2.4）。
+ *
+ * 表情面板挂在 composer 内部、紧贴工具条下方，而不是做成全屏弹窗：用户发
+ * 表情往往是连发，面板不该遮住消息流。store 里的列表是跨会话共享的（见
+ * `stores/sticker.ts`），所以这里只负责开关和「点了就发」。
+ */
+const stickerStore = useStickerStore()
+const stickersOpen = ref(false)
 
 /** 附件数量上限的统一提示文案（超限时 toast 用，和 utils 里的判定配套）。 */
 const LIMIT_TEXT = `最多 ${MAX_ATTACHMENTS} 个附件，视频最多 ${MAX_VIDEO_ATTACHMENTS} 个`
@@ -217,6 +230,8 @@ watch(
     // 只有草稿非空时才恢复预览态：空草稿进预览是一片空白，反而是干扰
     preview.value = text.value.trim().length > 0 && (previewByConv.get(id) ?? false)
     resetAttachments()
+    // 表情面板是「本次编辑」的一部分，切会话必须收起（和附件队列同理）
+    stickersOpen.value = false
   },
 )
 
@@ -618,6 +633,61 @@ function togglePreview(): void {
   }
 }
 
+/* ── 表情包（v2.4） ─────────────────────────────────────────────────── */
+
+/**
+ * 开/关表情面板。
+ *
+ * 打开时顺手 `ensureLoaded()`（幂等，第二次打开不会再打接口）。加载失败
+ * **不弹错误 toast**：后端还没上线时这里必然 404，属于预期内的空态，
+ * 面板里已经有「重试」按钮，再叠一个 toast 就是纯噪音。
+ */
+function toggleStickers(): void {
+  stickersOpen.value = !stickersOpen.value
+  if (stickersOpen.value) void stickerStore.ensureLoaded()
+}
+
+/** 面板里的「重试」（仅在 error 且列表为空时出现）。 */
+function retryStickers(): void {
+  void stickerStore.refresh()
+}
+
+/**
+ * 点表情 = 立刻把这张图作为一条**纯图片消息**发出去。
+ *
+ * 为什么不能走 `queue`（待发送附件队列）：队列是「用户先攒着、再补充文字、
+ * 最后一起发」的编辑态；表情包是「点一下就要发」的一步动作，塞进队列还得
+ * 再点一次发送，等于多一步。所以这里直接构 payload 交给 emit('send')。
+ *
+ * `content: ''` —— 纯表情消息没有正文，服务端允许（见 MessagePane.onSend 的
+ * 注释：content 允许为空串）。`replyToMsgId: null` —— 表情包发送**不继承**
+ * 当前引用回复目标：引用一条消息再贴表情，语义上没人需要，而且会让用户
+ * 莫名其妙引用了上一条。
+ *
+ * 面板保持打开：连发表情是常见操作。
+ */
+function onPickSticker(sticker: Sticker): void {
+  if (props.disabled) {
+    ui.toast('连接中断，暂时无法发送', 'error')
+    return
+  }
+  const payload: ComposerSendPayload = {
+    content: '',
+    attachments: [stickerToAttachment(sticker)],
+    replyToMsgId: null,
+  }
+  emit('send', payload)
+}
+
+/** 删除表情：调 store（先请求成功再改本地），失败 toast 且列表不动。 */
+async function onRemoveSticker(sticker: Sticker): Promise<void> {
+  try {
+    await stickerStore.remove(sticker.id)
+  } catch (e) {
+    ui.toast(`删除失败：${(e as { message?: string }).message ?? '请稍后重试'}`, 'error')
+  }
+}
+
 /**
  * 键盘行为（v2）：
  *   - 有附件 → Enter **不发送**，只换行（原因见文件头第 2 条）；
@@ -826,11 +896,28 @@ defineExpose({ stopTyping })
       :preview="preview"
       :uploading="uploading"
       :disabled="disabled"
+      :stickers-open="stickersOpen"
       @format="onFormat"
       @toggle-preview="togglePreview"
       @pick-image="pickImage"
       @pick-video="pickVideo"
       @pick-file="pickFile"
+      @toggle-stickers="toggleStickers"
+    />
+
+    <!--
+      表情面板：放在工具条下方、输入框上方。这个位置让「点表情 → 消息进输入区
+      上方的聊天流」的视觉动线最短，也不会盖住 textarea。
+    -->
+    <StickerPanel
+      v-if="stickersOpen"
+      :items="stickerStore.list"
+      :loading="stickerStore.loading"
+      :error="stickerStore.error"
+      @pick="onPickSticker"
+      @remove="onRemoveSticker"
+      @retry="retryStickers"
+      @close="stickersOpen = false"
     />
 
     <!-- 预览态：Markdown → VNode（与消息气泡同一渲染器，无 v-html） -->

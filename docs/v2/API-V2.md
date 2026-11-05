@@ -3,7 +3,7 @@
 本文件是 v2 改造期间前后端并行开发的**书面契约**。后端实现以 `backend/src/**` 为准，
 但端点路径、字段名、语义在本轮开发中不得偏离本文件；如需变更，先改本文件。
 
-版本：API `0.3.0`，`protocolVersion = 2`。
+版本：API `0.3.0`，`protocolVersion = 2`，`SCHEMA_VERSION = 5`。
 
 ## 0. 通用约定（沿用 v1）
 
@@ -147,9 +147,46 @@ interface PostComment {
   `conversation.removed`、`post.*`（v2 新增，可先只发给自己）。
 - `ready` 帧的 `protocolVersion` 升为 `2`。
 
-## 6. 数据库（SCHEMA_VERSION = 4）
+## 5.5 个人表情包（v2.4）
 
-新增/变更表（`backend/src/db.ts`）：
+```ts
+interface Sticker {
+  id: string          // 表情记录 id（删除时用）
+  uploadId: string    // 真正取图/发送时用
+  name: string
+  mimeType: string    // image/png | image/jpeg | image/webp | image/gif
+  size: number
+  kind: 'image'
+  url: string         // '/api/v1/uploads/<uploadId>'
+  createdAt: string
+}
+```
+
+| 方法 | 路径 | 请求体 | 成功 |
+|---|---|---|---|
+| GET | `/stickers?limit&offset` | – | 200 `{items: Sticker[], nextOffset}` |
+| POST | `/stickers` | `{uploadId}` | **201** 新建 / **200** 已收藏（幂等，同一对象） |
+| DELETE | `/stickers/:stickerId` | – | 200 `{ok:true}` |
+
+业务规则：
+- 两个 id 不可混：`id` 删除时用，`uploadId` 发送/取图时用；传错删除只得 404 `STICKER_NOT_FOUND`。
+- 登记校验：`uploadId` 必须存在、属于本人、`kind === 'image'`、嗅探类型限 png/jpeg/webp/gif，
+  否则 400 `INVALID_STICKER`（不区分「不存在」与「不属于你」，避免成为 UUID 探测面）。
+- **表情包可反复发送**：普通附件被消息引用后再复用会 409 `UPLOAD_IN_USE`，而本人收藏的表情包
+  不受此限 —— 该 `uploadId` 放进 `attachmentIds` 可任意次发送。
+- `DELETE /uploads/:id` 若被表情包引用 → 409 `UPLOAD_IN_USE`。删除表情包时，若该图已无任何
+  消息/帖子/其它表情包引用，连带删除上传物与磁盘文件；仍有消息引用则只删表情条目（否则历史消息破图）。
+- 孤儿上传清理（`realtime.ts` sweep）把「被表情包引用」也算作在用。
+
+## 6. 数据库（SCHEMA_VERSION = 5）
+
+v2.4（`SCHEMA_VERSION` 4 → 5）纯新增，无数据搬迁：
+- `stickers(id TEXT PRIMARY KEY, owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  upload_id TEXT NOT NULL REFERENCES uploads(id) ON DELETE CASCADE, name TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL, UNIQUE(owner_id, upload_id))`
+- `idx stickers_owner(owner_id, created_at)`、`idx stickers_upload(upload_id)`。
+
+v2 新增/变更表（`backend/src/db.ts`）：
 - `messages`：删 `attachment_id`；加 `recalled_at TEXT`、`reply_to_msg_id TEXT`；
   `type` CHECK 增 `video`/`mixed`。
 - `message_attachments(msg_id TEXT, attachment_id TEXT, position INTEGER,

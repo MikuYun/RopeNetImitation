@@ -64,6 +64,61 @@ v2 交付总账见 `docs/v2/RELEASE-NOTES.md`；接口契约见 `docs/v2/API-V2.
 - **不需要数据库迁移**（`uploads.kind` 仍只取 image/video/file 三者之一）。
 - 无端点 / 字段 / 枚举变化 → openapi 版本号不 bump，契约校验仍 **ERROR 0 / WARN 0**。
 
+### 2026-11-05 · v2.4 个人表情包 / PC 右键菜单 / 移动端复制修复
+
+- **个人表情包**（用户需求）：聊天气泡桌面 hover 工具条 `button[aria-label="存为表情"]`、
+  移动端长按 sheet、桌面右键菜单三处入口，把 png/jpeg/webp/gif **图片**收藏为个人表情包；
+  输入框工具条新增 `.cbar__btn--sticker`，点开 `section.sp[aria-label="表情包"]` 面板选择发送。
+  - 后端 `SCHEMA_VERSION` **4 → 5**（新增 `stickers` 表，纯新增无搬迁）；
+    新增 `GET /stickers`、`POST /stickers`（201 新建 / 200 幂等）、`DELETE /stickers/:stickerId`。
+  - **语义放宽**：普通附件被引用后复用仍 409 `UPLOAD_IN_USE`，但**本人已收藏为表情包的图片不受此限**，
+    可任意次发送 —— 这是表情包能反复发的前提。对照用例已锁定「未收藏的同一 PNG 第二次仍 409」。
+  - 删表情包：若该图已无消息/帖子引用则连带删上传物；仍有引用则只删表情条目（防历史破图）。
+    被表情包引用的上传物 `DELETE /uploads/:id` → 409；孤儿上传清理把「被表情包引用」也算在用。
+- **PC 右键菜单**（用户需求）：全局接管 `contextmenu`，浏览器原生菜单换成项目菜单
+  （`.ctx-menu[role="menu"][aria-label="操作菜单"]`）。空白区默认项 `refresh` / `copy-link` / `top` / `theme`；
+  消息上右键出消息专属项（`copy` / `select-text` / `reply` / `toggle-source` / `toggle-pin` /
+  `download-attachment` / `save-sticker` / `recall`）；图片附件右键出 `save-media` / `copy-media-url`。
+  - 输入框 / 富文本 / `<select>` 上右键 **保留浏览器原生菜单**（否则粘贴与拼写检查直接坏掉）；
+    `Shift + 右键` 是手动放行原生菜单的逃生口。
+  - 键盘可达：打开即聚焦第一项，上下键移动、Enter 触发、Esc 关闭；滚动/resize/点外部即关。
+- **移动端长按复制失败**（用户报的 bug）：根因三条叠加 ——
+  ① 手机通过 `http://<局域网IP>` 访问时 `isSecureContext === false`，`navigator.clipboard` 是
+  `undefined`，原 `MessageBubble.copyContent` 直接抛异常 → toast「复制失败」；
+  ② `@contextmenu` 无条件 `preventDefault()` 让安卓原生「选择/复制」菜单永不出现，
+  且 500ms 长按定时器弹的 AppModal 焦点陷阱会把选区打散；
+  ③ `.bubble`/`.bubble__text` 未显式 `user-select: text`（继承属性，祖先写 `none` 就会传染）。
+  - 修法：抽出**全仓唯一**剪贴板实现 `frontend/src/utils/clipboard.ts`（`navigator.clipboard` →
+    `textarea + execCommand` 兜底），四处重复实现全部收敛（`grep execCommand src/` 只剩 1 处真实调用）；
+    已有非空选区时 `contextmenu` 与长按都让给系统；新增菜单项「选择文本」给出系统原生复制柄；
+    双层钉死 `user-select: text` 并明确**禁止**加 `-webkit-touch-callout: none`。
+  - **该 bug 只在手机用局域网 IP 访问时复现**（localhost 是安全上下文，永远测不出来）——
+    需真机验证。
+- 契约：openapi 路径 39 → **41**、需求书声明 49 → **52**；版本号仍 `0.3.0`（纯增量）。
+  契约校验 **ERROR 0 / WARN 0**。
+- **验证（2026-11-05 全量复跑，隔离后端 3099 + vite 5173）**：
+  - 单元：后端 `--test test/*.test.ts` **77 / 77**（v2.3 为 64，新增 `sticker.test.ts` 12 例 +
+    `db-migration.test.ts` v4→v5 迁移 1 例）；前端 `vitest run` **17 files / 372 tests**
+    （v2.3 为 16 / 310）。
+  - 类型与构建：`tsc --noEmit` **0**、`vue-tsc --noEmit` **0**、`vite build` exit 0 +
+    `strip-mock-worker` 校验通过。
+  - e2e：`e2e-sticker-menu.mjs`（**新建**，1305 行 / 分节 A–O）**77 项 → 通过 76 / 失败 0 /
+    待验 1**（唯一待验 = headless 无法读回剪贴板，`clipboard-read` 权限被拒）；`e2e-v2.mjs`
+    **72 项 0 失败**、`e2e-attachment.mjs` **38/38**、`e2e-ux2-p0.mjs` **50/50**、
+    `e2e-matrix.mjs` **93/93**（首跑 91/2 失败，连跑三次确认是限流/时序抖动）、
+    `e2e-responsive.mjs` **117 断言 0 失败**、`e2e-gates.mjs` **13/14**（1 项 headless 无法切后台）、
+    `verify-dialog-a11y.mjs` **15/15**。
+  - 新增证据截图 3 张：`docs/evidence/v24-sticker-panel.png`、`v24-ctx-menu-default.png`、
+    `v24-ctx-menu-message.png`。
+  - **顺手修掉 `e2e-sticker-menu.mjs` 自身的 4 类取点缺陷**（首跑 9 条假失败全部由此而来，非产品缺陷）：
+    ① 右键「空白区」写死 `y = box.y + 8`，消息列表滚到底时该点落在消息行上 → 改为
+    `findPaneBlankPoint()` 用 `elementFromPoint` 探测真正属于 `.pane__scroll` 的点；
+    ② hover 后单次取 `opacity` 拿到 0.14s 过渡中途值（实测 t=50ms 为 0.837）→ 改为轮询等 `opacity === '1'`；
+    ③ 图片右键用 `.first()` 命中滚出屏幕几千像素的旧消息，Playwright 滚动触发 AppContextMenu 的
+    `window` 捕获阶段 `scroll` → 菜单立刻被关 → 改为 `scrollIntoViewIfNeeded()` 后用
+    `page.mouse.click` 在元素中心发真实右键；
+    ④ M/N 节依赖上一节残留菜单状态 → 每节开头显式 `closeMenuIfAny()` 并各自重建前置。
+
 ### 仍未关闭的风险
 
 1. **SEC-01 HTTP 明文**：生产入口 `http://mikuyun.xyz/chat/`，密码/token/消息全程明文。切换方案见

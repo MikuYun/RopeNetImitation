@@ -24,6 +24,7 @@ import AppIcon from '@/components/base/AppIcon.vue'
 import AppModal from '@/components/base/AppModal.vue'
 import MediaGrid from '@/components/square/MediaGrid.vue'
 import { fromNow } from '@/utils/datetime'
+import { writeClipboardText } from '@/utils/clipboard'
 import { isSafeHref } from '@/utils/markdown'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -187,34 +188,12 @@ const shareUrl = computed(() => `${location.origin}/chat/square?post=${props.pos
 /**
  * 剪贴板写入。
  *
- * `navigator.clipboard` 在非安全上下文（http + 非 localhost）不存在，所以必须有
- * 降级：临时 textarea + execCommand('copy')。降级也失败时才报错。
+ * 【为什么是 import 而不是本地实现】`navigator.clipboard` 在非安全上下文
+ * （http + 非 localhost）不存在，必须有 textarea + `execCommand` 降级。
+ * 这段降级原先在仓库里有四份（本文件、消息气泡、markdown 代码块、Profile 的
+ * UID 复制），改一处漏三处 —— 现在唯一实现在 `@/utils/clipboard`。
  */
-async function writeClipboard(text: string): Promise<boolean> {
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-      return true
-    }
-  } catch {
-    // 权限被拒/非安全上下文 → 走降级
-  }
-  try {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.setAttribute('readonly', '')
-    ta.style.position = 'fixed'
-    ta.style.top = '-9999px'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
-  } catch {
-    return false
-  }
-}
+const writeClipboard = writeClipboardText
 
 const sharing = ref(false)
 

@@ -1,6 +1,6 @@
 # AITrance v2 发布说明
 
-版本：接口 `0.3.0`，业务协议 `protocolVersion = 2`，数据库 `SCHEMA_VERSION = 4`。
+版本：接口 `0.3.0`，业务协议 `protocolVersion = 2`，数据库 `SCHEMA_VERSION = 5`（v2.4 起；v2 首发为 4）。
 基线：git `7ab67ef`（`chore: baseline snapshot before v2 platform upgrade`）。
 本文件是 v2 的交付总账：做了什么、破坏性变更、怎么迁移、怎么验证、还差什么。
 
@@ -101,6 +101,21 @@ v1：仅上传者本人 / 同会话成员。v2 追加「广场帖子引用」与
 - **上限**：图片/普通文件 **10 MiB → 50 MiB**（`UPLOAD_BODY_LIMIT` 11 → 51 MiB），视频仍 100 MiB。
 - **前端**：输入框 `accept` 放宽为 `image/*,video/*,audio/*` + 常见文档扩展名；视频入口
   `openPicker('video/*')`；附件图标新增 `audio / doc / sheet / slide` 四类。
+
+### 2.8 个人表情包 / 右键菜单 / 剪贴板兜底（v2.4，2026-11-05）
+
+- **数据库 `SCHEMA_VERSION` 4 → 5**：新增 `stickers` 表（纯新增、无数据搬迁，启动自动迁移）。
+- **新增 3 个端点**（openapi 路径 39 → 41，需求书声明 49 → 52，版本号仍 `0.3.0`）：
+  `GET /stickers`、`POST /stickers`、`DELETE /stickers/:stickerId`。
+- **语义放宽**：普通附件被消息引用后再复用仍 409 `UPLOAD_IN_USE`，但**本人收藏为表情包的图片
+  不受此限**，可任意次发送。这是「表情包能反复发」的前提，不是把校验关掉了。
+- **删除语义**：删表情包时若该图已无消息/帖子引用则连带删上传物；仍有引用则只删表情条目（防历史破图）。
+  被表情包引用的上传物 `DELETE /uploads/:id` → 409。
+- **PC 右键菜单**：全局接管 `contextmenu`，浏览器原生菜单被替换为项目菜单；输入框/富文本、
+  `Shift + 右键` 保留原生（否则用户没法粘贴、没法用拼写检查）。
+- **移动端复制修复**：`navigator.clipboard` 在 `http://<局域网IP>`（非安全上下文）不存在，
+  过去直接抛异常 → 现统一走 `utils/clipboard.ts`（execCommand 兜底）；同时在已有选区时
+  把 `contextmenu` 与长按都让给系统，并新增菜单项「选择文本」给出系统原生复制柄。
 
 ---
 

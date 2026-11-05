@@ -38,7 +38,9 @@
  */
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import AppIcon from '@/components/base/AppIcon.vue'
-import { fetchObjectUrl, revokeObjectUrl } from '@/api/uploads'
+import { downloadAttachment, fetchObjectUrl, revokeObjectUrl } from '@/api/uploads'
+import { copyTextToClipboard, type ContextMenuItem } from '@/utils/contextMenu'
+import { useUiStore } from '@/stores/ui'
 import {
   attachmentAltText,
   attachmentIconKind,
@@ -340,6 +342,70 @@ function onFileDownload(att: Attachment): void {
   emit('download', att)
 }
 
+/* ── 图片右键菜单 ───────────────────────────────────────────── */
+
+const ui = useUiStore()
+
+/**
+ * 图片的右键菜单项。
+ *
+ * 【为什么从附件自己的方法里发】这里能拿到完整的 `Attachment`
+ * 和已经取好的 blob URL；交给全局菜单只需要「菜单项 + 坐标」。
+ *
+ * 【关于「复制图片地址」的语义】附件 `Attachment.url` 是
+ * `/api/v1/uploads/<id>`，**需要 Bearer 鉴权**，粘到浏览器地址栏会 401。
+ * 所以复制的不能是它 —— 这里复制的是当前页面的图片直链：
+ * 有 blob URL 时复制 `blob:` 地址（同一标签页内可打开预览）。
+ * 这不是「能分享给别人的链接」，所以文案写「复制图片地址」而不是「复制链接」。
+ * 真要分享必须走服务端签名 URL，那是后端能力，本轮不做。
+ */
+function imageMenuItems(att: Attachment): ContextMenuItem[] {
+  const blobUrl = urls.value[att.id]
+  const isVideo = att.kind === 'video'
+  const noun = isVideo ? '视频' : '图片'
+  return [
+    {
+      id: 'save-media',
+      label: `保存${noun}`,
+      disabled: !blobUrl,
+      run: async () => {
+        try {
+          await downloadAttachment(att)
+        } catch {
+          // 与 MessageBubble 的下载失败文案对齐；不在菜单层自己拼接细节
+          ui.toast('下载失败，附件可能已被清理', 'error')
+        }
+      },
+    },
+    {
+      id: 'copy-media-url',
+      label: `复制${noun}地址`,
+      disabled: !blobUrl,
+      run: async () => {
+        const ok = await copyTextToClipboard(blobUrl ?? '')
+        ui.toast(ok ? `${noun}地址已复制` : '复制失败，请稍后重试', ok ? 'success' : 'error')
+      },
+    },
+  ]
+}
+
+/**
+ * 图片/视频格右键：弹出本项目菜单。
+ *
+ * 这里必须 `preventDefault` —— 全局处理器看到 `defaultPrevented` 才会让位
+ * （见 `App.vue` 的 `onGlobalContextMenu`），否则会先弹图片菜单、
+ * 紧接着被全局默认菜单盖掉。
+ *
+ * 触屏设备上长按不会触发 `contextmenu`，而是浏览器自己的图片长按菜单；
+ * 那条路径属于移动端长按场景（task-3），这里不加触摸处理，避免与长按手势
+ * 冲突：手指压在图片上准备滚动时会误弹菜单。
+ */
+function onImageContextMenu(att: Attachment, e: MouseEvent): void {
+  e.preventDefault()
+  e.stopPropagation()
+  ui.openContextMenu(e.clientX, e.clientY, imageMenuItems(att))
+}
+
 /** 视频时长文案（无 metadata 时为空串）。 */
 function videoTime(att: Attachment): string {
   return durationText(att)
@@ -363,7 +429,11 @@ function videoAlt(att: Attachment): string {
     <!-- ── 媒体区（图片 / 视频） ─────────────────────────────────── -->
     <template v-if="media.length > 0">
       <!-- 单张图片：大图，≤260×260 -->
-      <div v-if="isSingle && !singleIsVideo" class="att att--image att--hero">
+      <div
+        v-if="isSingle && !singleIsVideo"
+        class="att att--image att--hero"
+        @contextmenu="onImageContextMenu(single, $event)"
+      >
         <button
           class="att__thumb-btn"
           type="button"
@@ -401,7 +471,11 @@ function videoAlt(att: Attachment): string {
       </div>
 
       <!-- 单个视频：占满宽度，≤320px -->
-      <div v-else-if="singleIsVideo" class="att att--video att--video-single">
+      <div
+        v-else-if="singleIsVideo"
+        class="att att--video att--video-single"
+        @contextmenu="onImageContextMenu(single, $event)"
+      >
         <video
           v-if="urls[single.id]"
           class="att__video"
@@ -428,7 +502,13 @@ function videoAlt(att: Attachment): string {
 
       <!-- 2–9 个媒体：网格（2–4 → 2 列，5–9 → 3 列） -->
       <div v-else class="att__grid" :style="{ '--att-cols': columns }">
-        <div v-for="att in media" :key="att.id" class="att att--cell" :class="`att--${att.kind}`">
+        <div
+          v-for="att in media"
+          :key="att.id"
+          class="att att--cell"
+          :class="`att--${att.kind}`"
+          @contextmenu="onImageContextMenu(att, $event)"
+        >
           <!-- 图片格 -->
           <template v-if="att.kind === 'image'">
             <button

@@ -26,8 +26,10 @@ withDefaults(
     uploading?: boolean
     /** 连接中断：整条禁用。 */
     disabled?: boolean
+    /** 表情面板是否正展开（只用于 aria-expanded 与高亮，面板本身归 composer 管）。 */
+    stickersOpen?: boolean
   }>(),
-  { preview: false, uploading: false, disabled: false },
+  { preview: false, uploading: false, disabled: false, stickersOpen: false },
 )
 
 /**
@@ -49,6 +51,8 @@ const emit = defineEmits<{
   pickVideo: []
   /** 选文件：不限类型，由后端白名单决定成败。 */
   pickFile: []
+  /** 开/关表情包面板（面板挂在 composer 里，工具条只发信号）。 */
+  toggleStickers: []
 }>()
 
 interface ToolItem {
@@ -103,6 +107,34 @@ const tools: ToolItem[] = [
     </div>
 
     <div class="cbar__group cbar__group--end">
+      <!--
+        表情包入口（v2.4）。放在附件组最前面：它和「发送图片」共享心智位置
+        （都在右下角、都是往输入区塞内容），但点开的是一张常驻面板而不是
+        系统文件选择器，所以图标用笑脸而不是图片方块，避免和「发送图片」混淆。
+        `aria-expanded` 让读屏知道这是一枚开合按钮，不是一次性动作。
+      -->
+      <button
+        class="cbar__btn cbar__btn--sticker"
+        type="button"
+        :title="stickersOpen ? '收起表情包' : '表情包'"
+        :aria-label="stickersOpen ? '收起表情包' : '表情包'"
+        :aria-expanded="stickersOpen"
+        :disabled="disabled"
+        @click="emit('toggleStickers')"
+      >
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7" />
+          <circle cx="9" cy="10" r="1.15" fill="currentColor" />
+          <circle cx="15" cy="10" r="1.15" fill="currentColor" />
+          <path
+            d="M8 14.2c1 1.4 2.4 2.1 4 2.1s3-0.7 4-2.1"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.7"
+            stroke-linecap="round"
+          />
+        </svg>
+      </button>
       <!--
         图片与文件是**两个**入口（ux2-contract §十二）：
         - 图片：accept 只列图片 MIME，选完立即可见缩略图；不加 capture，
@@ -315,6 +347,19 @@ const tools: ToolItem[] = [
   color: var(--app-text-muted);
 }
 
+/* 表情入口与「发送图片」图标相近（都是往输入区塞内容），给它一点右侧留白
+   把两个入口分开，避免误点 */
+.cbar__btn--sticker {
+  min-width: 28px;
+  margin-right: 2px;
+  color: var(--app-text-muted);
+}
+
+.cbar__btn--sticker[aria-expanded='true'] {
+  background: color-mix(in srgb, var(--color-brand-500) 16%, transparent);
+  color: var(--color-brand-600);
+}
+
 /* 图片/文件是两个独立入口：留一道细分隔线，避免看成一枚按钮的两个图标 */
 .cbar__btn--attach {
   margin-left: 2px;
@@ -364,6 +409,9 @@ const tools: ToolItem[] = [
   .cbar__btn--image,
   .cbar__btn--attach,
   .cbar__btn--preview {
+    min-width: 44px;
+  }
+  .cbar__btn--sticker {
     min-width: 44px;
   }
   /* 手机上把「Aa」开关露出来 */

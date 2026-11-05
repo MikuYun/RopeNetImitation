@@ -204,6 +204,25 @@ export const UploadParams = Type.Object({ id: Id });
 // filename 只用于展示（落库的 name 字段），因此可省略：省略时由服务端填「未命名文件」。
 // 真正的磁盘文件名恒为 <id><扩展名>，客户端传入的名字不参与任何路径拼接。
 export const UploadQuery = Type.Object({ filename: Type.Optional(Type.String({ maxLength: 255 })) });
+// v5：个人表情包。表情包不复制文件，而是引用一条既有的本人 upload，
+// 因此 name/mimeType/size/url 都从 upload 展开，前端不必再查一次 uploads。
+// kind 恒为 'image'（表情包只收图片），保留该字段是为了让前端能复用 Attachment 的渲染分支。
+export const Sticker = Type.Object({
+  id: Id,
+  uploadId: Id,
+  name: Type.String(),
+  mimeType: Type.String(),
+  size: Type.Integer({ minimum: 0 }),
+  kind: Type.Literal('image'),
+  url: Type.String(),
+  createdAt: Timestamp,
+});
+export const StickerBody = Type.Object({ uploadId: Id }, { additionalProperties: false });
+export const StickerIdParams = Type.Object({ stickerId: Id });
+export const StickersResult = Type.Object({
+  items: Type.Array(Sticker),
+  nextOffset: Type.Union([Type.Integer({ minimum: 0 }), Type.Null()]),
+});
 export const ConversationParams = Type.Object({ conversationId: Id });
 // 置顶记录：id 是 pin 的 UUID，message 复用完整 Message（含 attachment），
 // pinnedBy 用完整 User 而不是 userId —— 置顶条要直接显示「谁置顶的」，让前端再拉一次用户是多余往返。

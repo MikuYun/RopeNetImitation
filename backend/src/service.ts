@@ -79,6 +79,26 @@ interface UploadRow {
   created_at: string;
 }
 
+/** v5：表情包行。upload_id 唯一约束是 (owner_id, upload_id)，见 db.ts。 */
+interface StickerRow {
+  id: string;
+  owner_id: string;
+  upload_id: string;
+  name: string;
+  created_at: string;
+}
+
+/** 列表查询里 JOIN 出来的 upload 列，全部加 upload_ 前缀以避免与 stickers 的同名列混淆。 */
+interface StickerJoinRow extends StickerRow {
+  upload_name: string;
+  upload_mime_type: string;
+  upload_size: number;
+  upload_sha256: string;
+  upload_owner_id: string;
+  upload_kind: string;
+  upload_created_at: string;
+}
+
 interface PostRow {
   id: string;
   author_id: string;
@@ -589,12 +609,24 @@ export class ChatService {
   /**
    * 一附件只能用在一处（消息或广场帖子）。必须在事务内调用：
    * 查完到插入之间若有并发，靠 BEGIN IMMEDIATE 的写锁串行化保证不会双绑。
+   *
+   * v5 例外：若该 upload 已经是**同一个 owner** 的表情包，则放行 ——
+   * 表情包的语义就是「反复发送同一个附件 id」，如果这里一视同仁地拒，
+   * 一个附件收藏成表情包后就连一次都发不出去（第一次发送后 message_attachments 里就有了引用）。
+   * 只放行调用者自己的表情包：别人的 upload 在 resolveAttachments 已按 owner 拒过，
+   * 这里再按 owner 限定，避免把校验放宽成「谁都能复用任意表情包」。
    */
-  private assertAttachmentUnused(attachmentId: string): void {
+  private assertAttachmentUnused(attachmentId: string, ownerId: string): void {
     const usedByMessage = this.store.get('SELECT 1 FROM message_attachments WHERE attachment_id = ?', attachmentId);
-    if (usedByMessage) return fail(409, 'UPLOAD_IN_USE', '该附件已被其他消息使用');
+    if (usedByMessage) {
+      const sticker = this.store.get('SELECT 1 FROM stickers WHERE upload_id = ? AND owner_id = ?', attachmentId, ownerId);
+      if (!sticker) return fail(409, 'UPLOAD_IN_USE', '该附件已被其他消息使用');
+    }
     const usedByPost = this.store.get('SELECT 1 FROM post_attachments WHERE attachment_id = ?', attachmentId);
-    if (usedByPost) return fail(409, 'UPLOAD_IN_USE', '该附件已被其他内容使用');
+    if (usedByPost) {
+      const sticker = this.store.get('SELECT 1 FROM stickers WHERE upload_id = ? AND owner_id = ?', attachmentId, ownerId);
+      if (!sticker) return fail(409, 'UPLOAD_IN_USE', '该附件已被其他内容使用');
+    }
   }
 
   /** 由附件组成推导消息 type（契约 §2）。混合 = 至少两种 kind。 */
@@ -673,7 +705,7 @@ export class ChatService {
     }
     // 事务内完成「占用检查 + 插消息 + 插关联」：任一步失败整体回滚，不会留下半条消息或半个关联。
     const row = this.store.transaction(() => {
-      for (const attachment of attachments) this.assertAttachmentUnused(attachment.id);
+      for (const attachment of attachments) this.assertAttachmentUnused(attachment.id, userId);
       const now = new Date().toISOString();
       const next = this.store.get<{ seq: number }>('SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE conversation_id = ?', conversationId)!;
       const msgId = randomUUID();
@@ -839,11 +871,134 @@ export class ChatService {
     const inUse = this.store.get('SELECT 1 FROM message_attachments WHERE attachment_id = ?', uploadId)
       ?? this.store.get('SELECT 1 FROM post_attachments WHERE attachment_id = ?', uploadId);
     if (inUse) return fail(409, 'UPLOAD_IN_USE', '该附件已被消息引用，不能删除');
+    // v5：被收藏成表情包也不能删 —— 删掉 upload 后表情包会变成永远 404 的破图。
+    // 用户要先在表情包面板里删掉该表情包，才能删这个上传。
+    if (this.store.get('SELECT 1 FROM stickers WHERE upload_id = ?', uploadId)) {
+      return fail(409, 'UPLOAD_IN_USE', '该附件已被表情包引用');
+    }
     // 先删库再删文件：反过来的话，删文件成功而删库失败会留下指向空文件的记录（不可读、不可删）。
     // 这里反之只会留下一个孤儿文件，由 retention sweep 兜底清理。
     this.store.run('DELETE FROM uploads WHERE id = ?', uploadId);
     removeUploadFile(this.uploadsDir, row.id, row.mime_type);
     return { ok: true as const };
+  }
+
+  /** 表情包允许的 mime 白名单。GIF 保留动图能力，SVG 明确排除（可内嵌脚本，XSS 面）。 */
+  private static readonly STICKER_MIME_TYPES = new Set([
+    'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  ]);
+
+  /**
+   * 表情包对外视图：把 upload 的展示字段摊平进来。
+   *
+   * 为什么不直接返回 uploadId 让前端再查：表情包面板一次要画几十个，
+   * 每个都发一次 GET /uploads/:id 是几十次往返；这些字段本来就是 upload 的冗余副本。
+   */
+  private stickerView(row: StickerRow, upload: UploadRow) {
+    return {
+      id: row.id,
+      uploadId: row.upload_id,
+      name: row.name === '' ? upload.name : row.name,
+      mimeType: upload.mime_type,
+      size: upload.size,
+      kind: 'image' as const,
+      url: `/api/v1/uploads/${row.upload_id}`,
+      createdAt: row.created_at,
+    };
+  }
+
+  /** 表情包列表（只返回本人）。按 created_at 倒序：最新收藏的排最前。 */
+  listStickers(ownerId: string, limit: number, offset: number) {
+    // 多取一条用于判断 nextOffset 是否有下一页，避免额外 COUNT 查询。
+    const rows = this.store.all<StickerJoinRow>(
+      `SELECT sticker.id, sticker.owner_id, sticker.upload_id, sticker.name, sticker.created_at,
+         upload.name AS upload_name, upload.mime_type AS upload_mime_type, upload.size AS upload_size,
+         upload.sha256 AS upload_sha256, upload.owner_id AS upload_owner_id,
+         upload.kind AS upload_kind, upload.created_at AS upload_created_at
+       FROM stickers sticker JOIN uploads upload ON upload.id = sticker.upload_id
+       WHERE sticker.owner_id = ?
+       ORDER BY sticker.created_at DESC, sticker.id DESC
+       LIMIT ? OFFSET ?`, ownerId, limit + 1, offset,
+    );
+    const page = rows.slice(0, limit);
+    return {
+      items: page.map(row => this.stickerView(row, this.stickerUploadOf(row))),
+      nextOffset: rows.length > limit ? offset + page.length : null,
+    };
+  }
+
+  /** 把列表查询里拼进来的 upload 字段还原成 UploadRow，供 stickerView 复用。 */
+  private stickerUploadOf(row: StickerJoinRow): UploadRow {
+    return {
+      id: row.upload_id,
+      owner_id: row.upload_owner_id,
+      name: row.upload_name,
+      mime_type: row.upload_mime_type,
+      size: row.upload_size,
+      sha256: row.upload_sha256,
+      kind: row.upload_kind as UploadRow['kind'],
+      created_at: row.upload_created_at,
+    };
+  }
+
+  /**
+   * 收藏表情包（幂等）。
+   *
+   * 返回值带 created 标志：路由据此决定 201 还是 200。
+   * 为什么幂等而不是 409：前端「点一下添加到表情」是常见双击目标，
+   * 重复提交报错会让用户看到一个莫名其妙的红条，而已存在时返回同一个对象语义更自然。
+   *
+   * 校验全部归一到 400 INVALID_STICKER 一条文案（契约 §stickers）：
+   * 对客户端来说「这个 upload 不能当表情包」是一个判断，区分「不存在/不是你的/不是图片」
+   * 只会增加前端分支，而且会成为探测他人 upload 是否存在的侧信道。
+   */
+  createSticker(ownerId: string, uploadId: string) {
+    const upload = this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', uploadId);
+    const invalid = () => fail(400, 'INVALID_STICKER', '表情包只支持 PNG/JPEG/WebP/GIF 图片');
+    if (!upload) return invalid();
+    if (upload.owner_id !== ownerId) return invalid();
+    if (upload.kind !== 'image') return invalid();
+    if (!ChatService.STICKER_MIME_TYPES.has(upload.mime_type)) return invalid();
+    // 唯一约束是 (owner, upload)，所以这一条查询与下面的 INSERT 之间不会有「别人的同图」干扰。
+    const existing = this.store.get<StickerRow>('SELECT * FROM stickers WHERE owner_id = ? AND upload_id = ?',
+      ownerId, uploadId);
+    if (existing) return { sticker: this.stickerView(existing, upload), created: false };
+    const row: StickerRow = {
+      id: randomUUID(), owner_id: ownerId, upload_id: uploadId, name: '', created_at: new Date().toISOString(),
+    };
+    this.store.run('INSERT INTO stickers(id, owner_id, upload_id, name, created_at) VALUES (?, ?, ?, ?, ?)',
+      row.id, row.owner_id, row.upload_id, row.name, row.created_at);
+    return { sticker: this.stickerView(row, upload), created: true };
+  }
+
+  /**
+   * 删除表情包。
+   *
+   * 顺序刻意是「先查属主，再删」：非属主返回 403 而不是 404，
+   * 与 DELETE /uploads/:id 的口径一致（uuid 不可枚举，403/404 的差别不构成探测面）。
+   *
+   * 删除后如果这个 upload 已经没有任何消息/帖子引用，就把它和磁盘文件一起删掉：
+   * 否则用户每收藏再删一次表情包，uploads 里就会永久沉淀一份没用的字节。
+   * 反过来，若还有消息在用（表情包发出去过），upload 必须留着，否则历史消息会变成破图。
+   */
+  deleteSticker(stickerId: string, userId: string) {
+    const row = this.store.get<StickerRow>('SELECT * FROM stickers WHERE id = ?', stickerId);
+    if (!row) return fail(404, 'STICKER_NOT_FOUND', '表情包不存在');
+    if (row.owner_id !== userId) return fail(403, 'FORBIDDEN', '无权操作该表情包');
+    return this.store.transaction(() => {
+      this.store.run('DELETE FROM stickers WHERE id = ?', stickerId);
+      const upload = this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', row.upload_id);
+      if (upload && upload.owner_id === userId) {
+        const referenced = this.store.get('SELECT 1 FROM message_attachments WHERE attachment_id = ?', upload.id)
+          ?? this.store.get('SELECT 1 FROM post_attachments WHERE attachment_id = ?', upload.id)
+          ?? this.store.get('SELECT 1 FROM stickers WHERE upload_id = ?', upload.id);
+        if (!referenced) {
+          this.store.run('DELETE FROM uploads WHERE id = ?', upload.id);
+          removeUploadFile(this.uploadsDir, upload.id, upload.mime_type);
+        }
+      }
+      return { ok: true as const };
+    });
   }
 
   markRead(conversationId: string, userId: string, lastReadSeq: number) {
@@ -1195,7 +1350,7 @@ export class ChatService {
     const postId = randomUUID();
     const now = new Date().toISOString();
     const row = this.store.transaction(() => {
-      for (const attachment of attachments) this.assertAttachmentUnused(attachment.id);
+      for (const attachment of attachments) this.assertAttachmentUnused(attachment.id, authorId);
       this.store.run(`INSERT INTO posts(id, author_id, content, status, created_at, updated_at, like_count, comment_count)
         VALUES (?, ?, ?, 'active', ?, ?, 0, 0)`, postId, authorId, normalized, now, now);
       attachments.forEach((attachment, position) => {
@@ -1473,6 +1628,8 @@ export class ChatService {
       // 他人在他帖子下的评论已随上面一起删；但别人帖子下、别人对「他发的评论」的回复
       // 仍指向已被删的评论 —— reply_to_id 若带外键会阻塞，这里统一置空，保留回复内容本身。
       this.store.run('UPDATE post_comments SET reply_to_id = NULL WHERE reply_to_id IS NOT NULL AND reply_to_id NOT IN (SELECT id FROM post_comments)');
+      // v5 表情包不需要显式清理：stickers.owner_id 与 stickers.upload_id 都是 ON DELETE CASCADE，
+      // 删 users 会级联删 uploads、再级联删 stickers，两跳都由 SQLite 按声明完成。
       this.store.run('DELETE FROM users WHERE id = ?', target.id);
     });
     for (const session of sessions) this.realtime.revoke(session.token_hash);

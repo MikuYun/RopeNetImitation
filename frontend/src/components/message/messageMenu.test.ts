@@ -8,12 +8,13 @@
  *
  * 用假时钟注入，不依赖 jsdom，也不真的等 500ms。
  */
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   LONG_PRESS_MS,
   RECALL_WINDOW_MS,
   canRecallMessage,
   createLongPress,
+  hasActiveTextSelection,
   messageMenuItems,
   shouldOpenMessageMenu,
 } from '@/components/message/messageMenu'
@@ -147,12 +148,19 @@ describe('shouldOpenMessageMenu', () => {
 })
 
 describe('messageMenuItems', () => {
-  it('纯文本消息：复制 + 置顶', () => {
-    expect(items()).toEqual(['copy', 'toggle-pin'])
+  it('纯文本消息：复制 + 选择文本 + 置顶', () => {
+    // 「选择文本」是 copy 的兜底路径（手机非安全上下文下 Clipboard API 不可用），
+    // 必须有正文才出现，且必须紧跟在 copy 之后。
+    expect(items()).toEqual(['copy', 'select-text', 'toggle-pin'])
   })
 
   it('含 Markdown 语法的消息多出「看源码」', () => {
-    expect(items({ canToggle: true })).toEqual(['copy', 'toggle-source', 'toggle-pin'])
+    expect(items({ canToggle: true })).toEqual([
+      'copy',
+      'select-text',
+      'toggle-source',
+      'toggle-pin',
+    ])
   })
 
   it('已置顶时置顶项仍然存在（只改文案，不是消失）', () => {
@@ -162,6 +170,7 @@ describe('messageMenuItems', () => {
   it('有附件时多出「下载附件」，排在撤回之前', () => {
     expect(items({ canToggle: true, hasAttachment: true })).toEqual([
       'copy',
+      'select-text',
       'toggle-source',
       'toggle-pin',
       'download-attachment',
@@ -180,8 +189,8 @@ describe('messageMenuItems', () => {
     expect(items({ hasText: false })).toEqual(['toggle-pin'])
   })
 
-  it('可回复时 reply 紧跟在 copy 之后', () => {
-    expect(items({ canReply: true })).toEqual(['copy', 'reply', 'toggle-pin'])
+  it('可回复时 reply 跟在 copy/select-text 之后', () => {
+    expect(items({ canReply: true })).toEqual(['copy', 'select-text', 'reply', 'toggle-pin'])
   })
 
   it('无正文时 reply 仍在 copy 位置（回复不依赖正文）', () => {
@@ -190,12 +199,126 @@ describe('messageMenuItems', () => {
 
   it('可撤回时 recall 永远排最后（危险动作不能被夹在中间）', () => {
     expect(items({ canToggle: true, hasAttachment: true, canReply: true, canRecall: true })).toEqual(
-      ['copy', 'reply', 'toggle-source', 'toggle-pin', 'download-attachment', 'recall'],
+      [
+        'copy',
+        'select-text',
+        'reply',
+        'toggle-source',
+        'toggle-pin',
+        'download-attachment',
+        'recall',
+      ],
     )
   })
 
   it('不可撤回时不出现 recall', () => {
     expect(items({ canRecall: false })).not.toContain('recall')
+  })
+
+  /* ── 存为表情（v2.4） ───────────────────────────────────────────── */
+
+  it('缺省（老调用点不传 canSaveSticker）时不出现 save-sticker', () => {
+    // 兼容性钉子：v2.4 之前所有调用点都没有这个字段，菜单项必须与老版本完全一致
+    expect(items({ hasAttachment: true })).not.toContain('save-sticker')
+    expect(items({ hasAttachment: true, canSaveSticker: undefined })).not.toContain('save-sticker')
+  })
+
+  it('可存为表情时 save-sticker 紧跟在 download-attachment 之后', () => {
+    expect(items({ hasAttachment: true, canSaveSticker: true })).toEqual([
+      'copy',
+      'select-text',
+      'toggle-pin',
+      'download-attachment',
+      'save-sticker',
+    ])
+  })
+
+  it('save-sticker 永远排在 recall 之前（撤回仍是最后一项）', () => {
+    const list = items({
+      canReply: true,
+      canToggle: true,
+      hasAttachment: true,
+      canSaveSticker: true,
+      canRecall: true,
+    })
+    expect(list).toEqual([
+      'copy',
+      'select-text',
+      'reply',
+      'toggle-source',
+      'toggle-pin',
+      'download-attachment',
+      'save-sticker',
+      'recall',
+    ])
+    expect(list[list.length - 1]).toBe('recall')
+  })
+
+  it('只有图片、没有文件类附件时也能出现 save-sticker（不依赖 hasFileAttachment）', () => {
+    // hasAttachment 表示「有任意附件」；纯图片消息没有可下载的文件，
+    // 但完全可以存为表情 —— 两者判定必须独立。
+    expect(items({ hasText: false, hasAttachment: true, canSaveSticker: true })).toContain(
+      'save-sticker',
+    )
+  })
+
+  it('canSaveSticker=false 显式传入时不出现 save-sticker', () => {
+    expect(items({ hasAttachment: true, canSaveSticker: false })).toEqual([
+      'copy',
+      'select-text',
+      'toggle-pin',
+      'download-attachment',
+    ])
+  })
+
+  /* ── 选择文本（task-3：移动端复制失败的兜底路径） ───────────────── */
+
+  it('有正文时包含 select-text，且位置在 copy 之后、reply 之前', () => {
+    const list = items({ canReply: true, canRecall: true })
+    expect(list).toContain('select-text')
+    expect(list.indexOf('copy')).toBeLessThan(list.indexOf('select-text'))
+    expect(list.indexOf('select-text')).toBeLessThan(list.indexOf('reply'))
+  })
+
+  it('无正文时不出现 select-text（没有可选的文本，摆了也点不出选区）', () => {
+    expect(items({ hasText: false, hasAttachment: true })).not.toContain('select-text')
+  })
+})
+
+describe('hasActiveTextSelection', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('无 window（node / SSR）时返回 false，不抛', () => {
+    vi.stubGlobal('window', undefined)
+    expect(hasActiveTextSelection()).toBe(false)
+  })
+
+  it('getSelection() 返回 null → false', () => {
+    vi.stubGlobal('window', { getSelection: () => null })
+    expect(hasActiveTextSelection()).toBe(false)
+  })
+
+  it('选区已折叠（只是光标，没有选中内容）→ false', () => {
+    vi.stubGlobal('window', {
+      getSelection: () => ({ isCollapsed: true, toString: () => '有内容但已折叠' }),
+    })
+    expect(hasActiveTextSelection()).toBe(false)
+  })
+
+  it('选区只圈到空白/换行 → false（长按气泡边缘很常见，不该吞掉菜单）', () => {
+    vi.stubGlobal('window', {
+      getSelection: () => ({ isCollapsed: false, toString: () => '  \n\t ' }),
+    })
+    expect(hasActiveTextSelection()).toBe(false)
+  })
+
+  it('有非空文本选区 → true（此时必须把长按/右键让给系统原生菜单）', () => {
+    vi.stubGlobal('window', {
+      getSelection: () => ({ isCollapsed: false, toString: () => '用户选中的正文' }),
+    })
+    expect(hasActiveTextSelection()).toBe(true)
   })
 })
 

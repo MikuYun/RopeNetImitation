@@ -21,9 +21,10 @@
  *     只有 PATCH 成功并回写 auth store 才会真的变。
  *  2. `auth.user` 是**响应式引用**，PATCH 返回的 User 要整体 `auth.user = next`
  *     而不是改字段（`api.updateMe` 返回的是新对象，字段级 patch 会丢字段）。
- *  3. UID 复制用 `navigator.clipboard`，在非安全上下文（http://非 localhost）
- *     下不存在 —— 必须降级到 `document.execCommand('copy')` 的 textarea 方案，
- *     否则内网 http 部署时按钮点了没反应。
+ *  3. UID 复制用共享的 `writeClipboardText`（`@/utils/clipboard`）：它内部会先试
+ *     `navigator.clipboard`，非安全上下文（http://非 localhost）下退到
+ *     `document.execCommand('copy')` 的 textarea 方案 —— 否则内网 http 部署时
+ *     按钮点了没反应。降级链全仓库只有那一份实现，页面里不再重复。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import AppAvatar from '@/components/base/AppAvatar.vue'
@@ -37,6 +38,7 @@ import { useUiStore, THEME_LABELS } from '@/stores/ui'
 import { fetchUserProfile, updateMe } from '@/api/users'
 import { uploadFile, UPLOAD_MAX_BYTES } from '@/api/uploads'
 import { checkUploadFile, formatBytes } from '@/utils/attachments'
+import { writeClipboardText } from '@/utils/clipboard'
 import { toApiError } from '@/api/http'
 import { goBack as goBackTo } from '@/composables/useBackNavigation'
 import { useRouter } from 'vue-router'
@@ -182,37 +184,11 @@ onBeforeUnmount(() => {
 /**
  * 复制文本。
  *
- * `navigator.clipboard.writeText` 只在安全上下文可用（https 或 localhost）；
- * 生产若走内网 http，它是 undefined —— 那时退回 textarea + execCommand。
- * execCommand 已废弃但仍是唯一可在非安全上下文工作的方案。
+ * 实现已收敛到 `@/utils/clipboard`：先试 `navigator.clipboard.writeText`
+ * （仅安全上下文可用），再退到 textarea + `execCommand('copy')`。
+ * 这里保留 `copyText` 这个名字只是为了让两个调用点（UID / 账号名）不变。
  */
-async function copyText(text: string): Promise<boolean> {
-  if (text.length === 0) return false
-  const clipboard = navigator.clipboard
-  if (clipboard && typeof clipboard.writeText === 'function') {
-    try {
-      await clipboard.writeText(text)
-      return true
-    } catch {
-      /* 落下去走降级方案 */
-    }
-  }
-  try {
-    const area = document.createElement('textarea')
-    area.value = text
-    area.setAttribute('readonly', '')
-    area.style.position = 'fixed'
-    area.style.opacity = '0'
-    area.style.pointerEvents = 'none'
-    document.body.appendChild(area)
-    area.select()
-    const ok = document.execCommand('copy')
-    document.body.removeChild(area)
-    return ok
-  } catch {
-    return false
-  }
-}
+const copyText = writeClipboardText
 
 async function copyUid(): Promise<void> {
   const uid = user.value?.uid

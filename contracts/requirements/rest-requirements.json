@@ -686,6 +686,80 @@
         }
       }
     },
+    "Sticker": {
+      "type": "object",
+      "required": [
+        "id",
+        "uploadId",
+        "name",
+        "mimeType",
+        "size",
+        "kind",
+        "url",
+        "createdAt"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "表情包条目 id，与 uploadId 不同：删除表情包不会删除上传物；仅在无人引用时才连带回收。"
+        },
+        "uploadId": {
+          "type": "string",
+          "format": "uuid",
+          "description": "被收藏的上传物 id。发送消息时把它放进 attachmentIds 即可复用。"
+        },
+        "name": {
+          "type": "string",
+          "description": "展示名，取上传时的文件名。"
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "服务端嗅探值；表情包只收 PNG/JPEG/WebP/GIF。"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "image"
+          ],
+          "description": "恒为 image —— 非图片上传无法收藏为表情包。"
+        },
+        "url": {
+          "type": "string",
+          "description": "相对路径 /api/v1/uploads/<uploadId>；同附件，必须带 Authorization 取值后转 blob 渲染。"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "note": "表情包视图。刻意不暴露 ownerId 与 sha256，理由同 Attachment。"
+    },
+    "StickerPage": {
+      "type": "object",
+      "required": [
+        "items",
+        "nextOffset"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Sticker"
+          }
+        },
+        "nextOffset": {
+          "type": "integer",
+          "nullable": true,
+          "description": "null = 末页"
+        }
+      },
+      "note": "按收藏时间倒序（createdAt DESC, id DESC）。"
+    },
     "PinnedMessage": {
       "type": "object",
       "required": [
@@ -3200,6 +3274,144 @@
       ],
       "diff": "v0.1 拟 cursors ≤200；后端上限 100。前端按 100 分批。响应形状与前端 v0.1 提议一致（后端明确接受了该形状）。",
       "frontendContract": "【关键】hasMore 为真时只推进到 nextSeq，禁止直接跳到 lastSeq（否则漏消息）。收到 404 应先刷新会话列表移除已退群项后重试。此端点不是持久化事件队列：断线期间的好友、成员、presence 事件必须通过 REST 当前状态校正，不能指望 sync 重放。sync 走 WS 的变体在本版被移除（后端无 conversation.sync 帧），前端补偿以本端点为主路径。"
+    },
+    {
+      "id": "E1",
+      "method": "GET",
+      "path": "/api/v1/stickers",
+      "required": true,
+      "success": 200,
+      "summary": "获取本人的表情包列表，按收藏时间倒序（createdAt DESC, id DESC）。只返回本人收藏，跨账号不可见。",
+      "pathParams": [],
+      "query": {
+        "type": "object",
+        "required": [
+          "limit",
+          "offset"
+        ],
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 30
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0,
+            "default": 0
+          }
+        }
+      },
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/StickerPage"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "UNAUTHORIZED"
+      ],
+      "diff": "新增端点。列表不分页游标而用 offset：表情包总量小且没有稳定 seq，offset 取舍与会话列表一致。nextOffset=null 表示末页。",
+      "frontendContract": "limit/offset 在 openapi 中均为 required（不可依赖默认值），前端必须显式传。items 已按后端给定顺序（createdAt 倒序）返回，不要自行重排；新增/删除后本地列表即可视为最新，不必强制全量重拉。"
+    },
+    {
+      "id": "E2",
+      "method": "POST",
+      "path": "/api/v1/stickers",
+      "required": true,
+      "success": 201,
+      "summary": "把本人的一张图片上传收藏为表情包。同一 upload 重复提交是幂等的：首次 201，再次 200 并返回同一个 Sticker。",
+      "pathParams": [],
+      "query": null,
+      "body": {
+        "type": "object",
+        "required": [
+          "uploadId"
+        ],
+        "properties": {
+          "uploadId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "先 POST /uploads 拿到的上传物 id。必须属于自己的上传，且嗅探类型为 image/png|image/jpeg|image/webp|image/gif。"
+          }
+        }
+      },
+      "response": {
+        "$ref": "#/definitions/Sticker"
+      },
+      "responseCodes": [
+        200,
+        201,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "INVALID_STICKER",
+        "UNAUTHORIZED",
+        "RATE_LIMITED"
+      ],
+      "diff": "新增端点。upload 不存在、不属于自己、kind 非 image、mimeType 不在白名单——四种情况统一 400 INVALID_STICKER（不做区分，避免成为 UUID 存在性探测面）。限额 30 次/分/用户。",
+      "frontendContract": "【两个 id 不能混】(1) 先 POST /uploads 拿 uploadId，再把 uploadId 传给本端点；响应里的 Sticker.id 是表情记录 id，删除时用它，取图仍用 Sticker.uploadId。(2) 201=新建、200=已收藏过（两者都返回同一个 Sticker，前端不应弹错）。(3) 只支持 png/jpeg/webp/gif 四种，其它图片请在上传前拦下以减少无谓请求，但最终以后端判定为准。(4) 收藏成功后该图片即可反复发送：把 uploadId 放进消息的 attachmentIds，不再受「附件已被引用」限制。"
+    },
+    {
+      "id": "E3",
+      "method": "DELETE",
+      "path": "/api/v1/stickers/{stickerId}",
+      "required": true,
+      "success": 200,
+      "summary": "删除本人的表情包。若该图片已无任何消息/帖子/其它表情包引用，连带删除上传物与磁盘文件。",
+      "pathParams": [
+        {
+          "name": "stickerId",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "query": null,
+      "body": null,
+      "response": {
+        "$ref": "#/definitions/Ok"
+      },
+      "responseCodes": [
+        200,
+        400,
+        401,
+        403,
+        404,
+        409,
+        413,
+        415,
+        429,
+        500
+      ],
+      "errorCodes": [
+        "VALIDATION_ERROR",
+        "STICKER_NOT_FOUND",
+        "FORBIDDEN",
+        "UNAUTHORIZED"
+      ],
+      "diff": "新增端点。:stickerId 是表情记录 id（不是 uploadId）。删除表情包与删除上传物是两件事：只有在「已无任何引用」时才顺手回收 upload 行与文件，否则历史消息里的图片会变成破图。",
+      "frontendContract": "(1) 传 Sticker.id，不是 uploadId（传错只会得到 404 STICKER_NOT_FOUND）。(2) 返回 200 {ok:true}，无正文以外的字段。(3) 删除后若该图片仍被历史消息引用，图片照常可读；前端不要因此认为「删表情包会把聊天记录里的图删掉」。"
     }
   ],
   "deferredEndpoints": [

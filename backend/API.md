@@ -17,7 +17,7 @@
   - **offset 分页**：会话、好友、好友申请、用户搜索、管理后台。返回 `{items,nextOffset}`，`nextOffset:null` 表示末页；`limit` 默认 30、最大 100，`offset` 默认 0。
   - **cursor 分页**：广场时间线、访客主页帖子、帖子评论。返回 `{items,nextCursor}`，`nextCursor:null` 表示末页；`limit` 默认 20、最大 50；`cursor` 是服务端生成的不透明字符串（长度 ≤128），客户端只能原样回传，**不要解析、拼接或改写**。
 - 错误结构统一为 `{error:{code,message,traceId}}`，前端只按 `code` 分支，`message` 为展示文案（不可当作稳定契约）。
-- 限流（超出返回 429，带 `Retry-After`）：普通请求每用户每分钟 200 次；注册/登录各 IP 每分钟 10 次；发消息每用户每分钟 60 次；发帖、发评论各每分钟 30 次；点赞/取消点赞每分钟 60 次；上传每分钟 30 次。
+- 限流（超出返回 429，带 `Retry-After`）：普通请求每用户每分钟 200 次；注册/登录各 IP 每分钟 10 次；发消息每用户每分钟 60 次；发帖、发评论各每分钟 30 次；点赞/取消点赞每分钟 60 次；上传每分钟 30 次；收藏表情包每分钟 30 次。
 - 长度上限：消息正文 4000 字符；**带附件发消息时正文必须非空**；帖子正文 5000 字符（无附件时不可为空）；评论 1–1000 字符。字符按 Unicode 码点计。
 - HTTP JSON body 上限 **64 KiB**；上传接口是二进制，传输层上限约 101 MiB，业务上限为图片/普通文件 **10 MiB**、视频 **100 MiB**（超限 413）。超限的 JSON 请求返回 413。
 - 消息正文、昵称、帖子与评论正文原样作为文本数据返回，**前端必须文本渲染，不得作为 HTML 注入**。
@@ -121,6 +121,10 @@
 ### Upload
 
 `{id,name,mimeType,size,sha256,kind,url,createdAt}`：Attachment 再加 `sha256`（仅在上传成功那一刻返回，用于客户端自校验与排障，不进入消息/帖子的附件）。
+
+### Sticker
+
+`{id,uploadId,name,mimeType,size,kind:'image',url,createdAt}`。个人表情包条目：`uploadId` 是真正取图/发送时用的上传物 id，`id` 是表情记录 id（删除时用它）。两者不同，传错删除只会得到 404 `STICKER_NOT_FOUND`。列表接口返回 `{items:Sticker[],nextOffset}`，按收藏时间倒序（`createdAt DESC, id DESC`），只含本人收藏。
 
 ### PinnedMessage
 
@@ -318,7 +322,23 @@ curl.exe -X POST http://127.0.0.1:3001/api/v1/auth/ws-ticket -H "Authorization: 
 3. 该附件被引用在**未删除**（`status='active'`）的广场帖子里（任何登录用户可读）；
 4. 该附件被某个用户头像（`users.avatar_url`）或群头像（`conversations.avatar_url`）引用。
 
-因此头像图片对全站登录用户可见，而私聊里未分享的图片只有会话成员能读。删除只允许属主，且未被任何消息或帖子引用（否则 409 `UPLOAD_IN_USE`）；撤回或删除消息后附件即释放，可再次使用。
+因此头像图片对全站登录用户可见，而私聊里未分享的图片只有会话成员能读。删除只允许属主，且未被任何消息、帖子或表情包引用（否则 409 `UPLOAD_IN_USE`）；撤回或删除消息后附件即释放，可再次使用。
+
+### 5.2.1 个人表情包
+
+表情包是「本人已上传图片」的**引用**，不是二次上传：先走 `POST /uploads` 拿到 `uploadId`，再登记成表情。路径相对 `/api/v1`：
+
+| 方法与路径 | 请求 | 成功响应 |
+|---|---|---|
+| `GET /stickers?limit=30&offset=0` | offset 分页 | 200 `{items:Sticker[],nextOffset}` |
+| `POST /stickers` | `{uploadId}` | 201 Sticker（新建）或 200 Sticker（已收藏，幂等） |
+| `DELETE /stickers/:stickerId` | 无 | 200 `{ok:true}` |
+
+`Sticker = {id,uploadId,name,mimeType,size,kind:'image',url,createdAt}`。**两个 id 不要混**：`id` 是表情记录 id（删除时用），`uploadId` 是取图/发消息时用。`url` 与附件一样是 `/api/v1/uploads/<uploadId>`，需要 `Authorization` 头，不能直接塞进 `<img src>`。
+
+登记规则：`uploadId` 必须存在、属于本人、`kind` 为 `image` 且嗅探类型限 `image/png|image/jpeg|image/webp|image/gif`，否则 400 `INVALID_STICKER`（不区分「不存在」与「不属于你」，避免成为 UUID 探测面）。同一 `(owner,upload)` 重复登记幂等。限流 30 次/分/用户。删除未知表情包 404 `STICKER_NOT_FOUND`，删他人 403 `FORBIDDEN`。
+
+**表情包可以反复发送**：普通附件一旦被消息引用再复用会 409 `UPLOAD_IN_USE`，而本人收藏为表情包的图片不受此限，把 `uploadId` 放进 `attachmentIds` 可任意次发送。删除表情包时，若该图片已无任何消息/帖子/其它表情包引用，连带删除上传物与磁盘文件；仍有消息引用则只删表情条目，图片保留（否则历史消息里的图会变成破图）。同理，被表情包引用的上传物不能直接 `DELETE /uploads/:id`（409 `UPLOAD_IN_USE`）。
 
 ### 5.3 撤回消息
 
@@ -456,6 +476,7 @@ typing 客户端应节流（建议最多每 2 秒一次），前端 5 秒无更�
 | 400 | `BAD_REQUEST` | JSON 解析等请求格式错误 |
 | 400 | `ATTACHMENT_LIMIT` | 附件数量/类型超限（>9 个、视频 >1 个、广场带 file） |
 | 400 | `INVALID_ATTACHMENT` | 附件不存在、不属于自己或数量对不上 |
+| 400 | `INVALID_STICKER` | 收藏表情包失败：上传物不存在、不属于本人、非图片或非 PNG/JPEG/WebP/GIF |
 | 400 | `INVALID_AVATAR_URL` | 非有效头像地址（既非空、非 HTTPS、也非本人上传的图片） |
 | 400 | `SELF_FRIEND_REQUEST`,`SELF_CONVERSATION` | 不允许自己加自己/私聊自己 |
 | 400 | `INVALID_MEMBERS`,`GROUP_FULL`,`GROUP_REQUIRED` | 群成员不合法、超限、对私聊做群操作 |
@@ -474,9 +495,10 @@ typing 客户端应节流（建议最多每 2 秒一次），前端 5 秒无更�
 | 404 | `USER_NOT_FOUND`,`CONVERSATION_NOT_FOUND`,`REQUEST_NOT_FOUND`,`MEMBER_NOT_FOUND`,`UPLOAD_NOT_FOUND` | 资源不可见或不存在；申请处理无权限也返回 404 |
 | 404 | `NOT_FOUND` | 通用不存在：消息不存在、帖子/评论不存在、接口不存在 |
 | 404 | `PIN_NOT_FOUND` | 该消息未被置顶 |
+| 404 | `STICKER_NOT_FOUND` | 表情包不存在或不属于本人（删除时传错 id 常见） |
 | 409 | `USERNAME_TAKEN`,`ALREADY_FRIENDS`,`REQUEST_PENDING`,`REQUEST_RESOLVED` | 重复账号/好友/申请状态冲突 |
 | 409 | `OWNER_CANNOT_LEAVE`,`IDEMPOTENCY_CONFLICT` | 群主不能退出/重复消息 id 与内容冲突 |
-| 409 | `UPLOAD_IN_USE` | 附件已被其他消息或帖子引用 |
+| 409 | `UPLOAD_IN_USE` | 附件已被其他消息、帖子或表情包引用 |
 | 409 | `PIN_LIMIT` | 单会话置顶超过 50 条 |
 | 409 | `CANNOT_MUTE_ADMIN`,`CANNOT_DELETE_ADMIN` | 不能对管理员账号执行该操作 |
 | 413 | `UPLOAD_TOO_LARGE` | 请求体或文件超过上限（JSON 64 KiB；图片/文件 50 MiB；视频 100 MiB） |

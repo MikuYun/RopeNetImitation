@@ -91,11 +91,38 @@ export function shouldOpenMessageMenu(isSystem: boolean, isMobile: boolean): boo
 /** 菜单项标识。文案由组件决定，顺序由 {@link messageMenuItems} 决定。 */
 export type MessageMenuItem =
   | 'copy'
+  | 'select-text'
   | 'reply'
   | 'toggle-source'
   | 'toggle-pin'
   | 'download-attachment'
+  | 'save-sticker'
   | 'recall'
+
+/**
+ * 当前页面是否已经有**非空的原生文本选区**。
+ *
+ * 【为什么需要这个判定】这是「移动端长按复制失败」缺陷的第二根因：
+ * 安卓 Chrome 的长按手势本身会产生一个原生选区（并弹出系统的「复制/全选」
+ * 菜单）。如果我们的 `contextmenu` 处理器无条件 `preventDefault()` + 弹自己的
+ * 菜单，原生菜单永远出不来；同时自己写的 `AppModal` 焦点陷阱会把选区打散 ——
+ * 用户既拿不到我们的复制（clipboard 在非安全上下文不可用），也拿不到系统的。
+ *
+ * 所以规则改为：**只要已经有非空选区，就把这次长按/右键完全让给系统**。
+ * 用户想用我们的菜单，先点一下空白处清掉选区即可（这是各家 IM 的通行做法）。
+ *
+ * 【为什么要判 `toString().trim()`】选区可能只圈到一个换行/空格（长按气泡
+ * 边缘时很常见），那种「有选区」对用户毫无意义，不该因此吞掉菜单。
+ *
+ * @returns 无 window（SSR / node 测试环境）或选区为空/已折叠时返回 false
+ */
+export function hasActiveTextSelection(): boolean {
+  if (typeof window === 'undefined') return false
+  const sel = window.getSelection()
+  if (sel === null) return false
+  if (sel.isCollapsed) return false
+  return sel.toString().trim().length > 0
+}
 
 /**
  * 撤回窗口（毫秒）—— 与后端 RECALL_WINDOW_EXPIRED 的 120 秒**必须一致**。
@@ -109,15 +136,19 @@ export const RECALL_WINDOW_MS = 120_000
 /**
  * 菜单里应该出现哪些项，以及它们的顺序。
  *
- * 顺序按「使用频率 × 后果」排：复制（最常用）→ 回复 → 看源码/渲染（阅读辅助）→
- * 置顶（改变会话状态）→ 下载附件 → 撤回（不可逆，固定放最后）。
+ * 顺序按「使用频率 × 后果」排：复制（最常用）→ 选择文本（复制的兜底路径）→
+ * 回复 → 看源码/渲染（阅读辅助）→ 置顶（改变会话状态）→ 下载附件 →
+ * 存为表情 → 撤回（不可逆，固定放最后）。
  * 「取消」不在这个列表里：它由组件固定追加在末尾，不属于业务动作。
  *
- * @param opts.hasText      有正文才显示「复制正文」
+ * @param opts.hasText      有正文才显示「复制正文」与「选择文本」
  * @param opts.canReply     未撤回、非系统消息才可引用回复
  * @param opts.canToggle    正文含 Markdown 语法才显示「看源码/看渲染」
  * @param opts.pinned       是否已置顶，决定文案是「置顶」还是「取消置顶」
  * @param opts.hasAttachment 有附件才显示「下载附件」
+ * @param opts.canSaveSticker 消息带一张可做表情的图片（png/jpeg/webp/gif）时显示「存为表情」。
+ *        可选：v2.4 之前的所有调用方没有这个字段，缺省按「没有图片」处理，
+ *        老调用点的菜单项顺序完全不变。
  * @param opts.canRecall    作者本人 && 未撤回 && 在 120 秒窗口内
  */
 export function messageMenuItems(opts: {
@@ -126,16 +157,24 @@ export function messageMenuItems(opts: {
   canToggle: boolean
   pinned: boolean
   hasAttachment: boolean
+  canSaveSticker?: boolean
   canRecall: boolean
 }): MessageMenuItem[] {
   const items: MessageMenuItem[] = []
   if (opts.hasText) items.push('copy')
+  // 「选择文本」紧跟复制：它存在的唯一理由就是「复制按钮没成功时的第二条路」
+  // （手机内网 http 下 Clipboard API 不可用）。两项目标一致，必须相邻，
+  // 用户从「复制失败」的 toast 里回来时第一次长按就更容易看到它。
+  if (opts.hasText) items.push('select-text')
   if (opts.canReply) items.push('reply')
   if (opts.canToggle) items.push('toggle-source')
   // 置顶对任何已发出的消息都可用（文本/图片/文件都能置顶），所以不加条件；
   // `pinned` 只影响文案，不影响是否出现。
   items.push('toggle-pin')
   if (opts.hasAttachment) items.push('download-attachment')
+  // 「存为表情」紧跟下载（同为「把附件取到本地」的动作），但在撤回之前 ——
+  // 撤回是危险动作，必须永远排最后。
+  if (opts.canSaveSticker) items.push('save-sticker')
   // 危险动作永远排最后：菜单是从上往下读的，误触代价高的项不能夹在中间
   if (opts.canRecall) items.push('recall')
   return items

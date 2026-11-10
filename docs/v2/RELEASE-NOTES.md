@@ -14,7 +14,7 @@
 | 2 | 点任意头像进访客资料页 | `views/UserProfileView.vue`、`components/message/MessageBubble.vue`（`emit('open-profile')`）、`views/MessagePane.vue`（`onOpenProfile` → `router.push`） | `e2e-v2` 气泡头像点击；`docs/evidence/v2-req2-visitor-profile.png` |
 | 3 | ≥5 预置主题 + 自定义 RGB（含聊天框、字体、背景） | `frontend/src/styles/theme.css`（7 套 × 31 变量）、`stores/ui.ts`、`components/theme/ThemePicker.vue` | `e2e-v2` 七套切换 + 自定义落盘 + 刷新保持；`docs/evidence/v2-req3-*.png` |
 | 4 | 多图多文件（≤9 图 + ≤1 视频）、图片必带文字、文字不被吞、有附件时 Enter 不发 | `components/message/MessageComposer.vue`、`AttachmentView.vue`（九宫格 + 视频 + 灯箱）、`MessageBubble.vue`、`utils/attachments.ts` | `e2e-v2` + `e2e-attachment` 38/38；`docs/evidence/v2-req4-*.png` |
-| 5 | 清库并只保留管理员 `root` / `12345678` | `backend/scripts/reset-db.mjs`、`backend/src/config.ts`（`ADMIN_USERNAME=root`、`ADMIN_INITIAL_PASSWORD=12345678`）、`backend/src/bootstrap.ts`（`ensureAdmin`） | 真实库副本端到端：清空 15 张业务表 → 重启 → `POST /auth/login` 200 |
+| 5 | 清库并只保留管理员 `root` / `12345678` | `backend/scripts/reset-db.mjs`、`backend/src/config.ts`（`ADMIN_USERNAME=root`、`ADMIN_INITIAL_PASSWORD=12345678`）、`backend/src/bootstrap.ts`（`ensureAdmin`） | 真实库副本端到端：清空 16 张业务表（v2.6 起含 `stickers`）→ 重启 → `POST /auth/login` 200 |
 | 6 | 广场（帖子 / 图片 ≤9 / 视频 ≤1 / 文字 ≤5000） | 后端 `POST|GET /posts` 等 9 端点 + 4 张新表；前端 `views/SquareView.vue`、`components/square/*`、`stores/square.ts`、`api/posts.ts` | `e2e-v2` 发布/点赞/评论/超限拦截；`docs/evidence/v2-req6-*.png` |
 | 8 | 初始两个账号：`root` / `12345678`（管理员）+ `QJQ` / 柒玖柒 / `A454545asd@`（普通用户），此后新注册用户自动加 QJQ 为好友 | `backend/src/config.ts`（`loadSeedUser` + `SEED_USER_*`）、`backend/src/bootstrap.ts`（`ensureSeedUser`）、`backend/src/app.ts`（在 `registerRoutes` 之前接线）、`backend/scripts/reset-db.mjs`（清库后建两个账号）；自动加好友复用既有的 `DEFAULT_FRIEND_USERNAME` 注册逻辑 | `backend/test/seed-user.test.ts` 9 用例 + 隔离库端到端：首启建出 `root`/`qjq` → 两者登录均 200 → 注册新用户 201 且 `/friends` 双向各有 `qjq` → 无 pending 申请 |
 
@@ -164,6 +164,18 @@ uid 被占时顺延到下一个空号），命中即完全不动；账号锚点�
 两个引导都在 `registerRoutes` **之前**执行：`DEFAULT_FRIEND_USERNAME` 指向的账号不存在时，
 注册接口会 fail-closed 返回 503 `DEFAULT_FRIEND_UNAVAILABLE`，新库首启就会「一个用户都注册不了」。
 所以 `DEFAULT_FRIEND_USERNAME` 应与 `SEED_USER_USERNAME` 指向同一账号（默认都是 `qjq`）。
+
+启动自检（`backend/src/app.ts`，2026-11-06 补）：`defaultFriendUsername` 历史上只在「别人注册」
+这条路径上被读取，配置漏了或账号不在库里时，故障要等到第一个新用户注册才以 503 暴露，
+运维看启动日志完全无感（真实事故：部署时漏了 `.env`，整个自动加好友功能静默关闭）。
+现在 bootstrap 段结束会固定打一条 `default friend bootstrap: ...`：
+
+| 状态 | 日志 | 含义 |
+|---|---|---|
+| 已解析 | `info` `default friend bootstrap: resolved` + `uid` | 功能可用 |
+| 账号缺失 | `warn` `default friend account NOT FOUND — user registration will fail with 503` | 新用户注册会 503，需先建账号或改配置 |
+| 账号被禁 | `warn` `default friend account is banned — new users will be linked to a non-active account` | 配置指向的账号 `status != 'active'` |
+| 未启用 | `info` `default friend bootstrap: disabled (DEFAULT_FRIEND_USERNAME is empty)` | 空串是合法配置，= 主动关闭该功能 |
 
 ---
 

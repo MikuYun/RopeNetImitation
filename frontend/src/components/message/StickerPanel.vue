@@ -310,14 +310,23 @@ function onPick(sticker: Sticker): void {
 
 .sp__cell {
   position: relative;
+  /* 方形排版由格子本体负责：只有格子的宽确定（grid 列宽），高度才能从宽推出来，
+     里面的 img 也才有确定的 containing block。以前 aspect-ratio 挂在 .sp__pick 上，
+     方形是靠内容撑的，img 的 100% 高度就没了参照，引擎回退到 intrinsic 尺寸 → 被拉变形。 */
+  aspect-ratio: 1 / 1;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .sp__pick {
+  /* 绝对铺满格子：宽高都继承格子的确定尺寸，img 的 100%/100% 就稳了 */
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  height: 100%;
   padding: 2px;
   border: 1px solid var(--app-border);
   border-radius: var(--radius-sm);
@@ -339,13 +348,21 @@ function onPick(sticker: Sticker): void {
 
 .sp__pick:focus-visible {
   outline: 2px solid var(--color-brand-500);
-  outline-offset: 1px;
+  /* 负 offset：格子已 overflow:hidden，正向 offset 的焦点环会被裁掉 */
+  outline-offset: -2px;
 }
 
 .sp__img {
+  /* contain：按原比例完整装进格子，不裁切、不拉伸。
+     透明 PNG / 非方形表情会留白（居中），这正是要的效果 ——
+     宁可留白也不能变形。display:block 去掉 inline 基线下方的幽灵空隙。 */
+  display: block;
   width: 100%;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
   object-fit: contain;
+  object-position: center;
 }
 
 .sp__placeholder {
@@ -353,6 +370,11 @@ function onPick(sticker: Sticker): void {
   align-items: center;
   justify-content: center;
   color: var(--app-text-faint);
+}
+
+/* 占位图标同样居中、不撑格子 */
+.sp__placeholder > * {
+  flex: 0 0 auto;
 }
 
 .sp__del {

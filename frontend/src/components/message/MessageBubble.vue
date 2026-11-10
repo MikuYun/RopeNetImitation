@@ -185,6 +185,19 @@ const recallText = computed(() => {
 const attachments = computed<Attachment[]>(() => props.message.attachments ?? [])
 const hasAttachments = computed(() => attachments.value.length > 0)
 const hasText = computed(() => props.message.content.trim().length > 0)
+/**
+ * 「纯媒体消息」：只有图片/视频、没有正文、没有引用条。
+ *
+ * 这类气泡不应该有底色、描边和 6px 内边距 —— 用户反馈图片/视频外面「有边框」，
+ * 那个方框其实就是气泡自身的背景色 + 内边距。媒体消息只留媒体本身。
+ */
+const mediaOnly = computed(
+  () =>
+    hasAttachments.value &&
+    !hasText.value &&
+    props.message.replyTo == null &&
+    attachments.value.every((a) => a.kind === 'image' || a.kind === 'video'),
+)
 
 /** 附件下载按钮只针对第一个文件类附件（图片/视频走 Viewer 内部的下载入口）。 */
 const firstFileAttachment = computed<Attachment | null>(() => {
@@ -224,17 +237,28 @@ const canSaveSticker = computed(
  * （附件的 `id` 就是 uploadId），但契约里 `POST /stickers` 的字段叫 uploadId，
  * 这里显式传 `a.id`（= uploadId）并留注释，避免以后有人当成「表情记录 id」。
  *
+ * 【为什么要压缩】表情包会长期占着服务器磁盘，原图动辄几 MB；收藏时先缩到
+ * 512px 并转 WebP 再入库，体积通常只剩 5%~20%。压缩失败会自动回退成收藏原图，
+ * 所以这里不需要为压缩单独兜底，只需要一个 busy 守卫防止重复点击。
+ *
  * 失败 toast 是必须的：后端还没上线时会 404，用户点了没反应会以为按钮坏了。
  */
+const savingSticker = ref(false)
+
 async function saveSticker(): Promise<void> {
   closeMenu()
+  if (savingSticker.value) return
   const att = stickerAttachment.value
   if (!att) return
+  savingSticker.value = true
   try {
-    await stickerStore.add(att.id)
+    await stickerStore.saveFromAttachment(att)
+    // e2e-sticker-menu.mjs 断言这句文案，文案必须保持原样。
     ui.toast('已保存到表情包', 'success')
   } catch (e) {
     ui.toast(`保存失败：${(e as { message?: string }).message ?? '请稍后重试'}`, 'error')
+  } finally {
+    savingSticker.value = false
   }
 }
 
@@ -692,6 +716,7 @@ watch(
               mine ? 'bubble--mine' : 'bubble--peer',
               hasAttachments ? 'bubble--attach' : '',
               hasAttachments && hasText ? 'bubble--attach-text' : '',
+              mediaOnly ? 'bubble--media' : '',
               clampable && !expanded ? 'bubble--clamped' : '',
             ]"
           >
@@ -1111,6 +1136,18 @@ watch(
 /* 附件 + 正文同时存在时，文字一侧要留出正常呼吸空间 */
 .bubble--attach-text {
   padding: 6px 10px 9px;
+}
+/*
+ * 纯媒体气泡（v2.5）：只有图片/视频的消息不套气泡壳子。
+ *
+ * 用户报的「图片外面有边框」其实是气泡自己的底色 + 内边距 + 阴影，不是 img 的
+ * border。媒体消息去掉底色/阴影/内边距后，图片和视频就是独立的圆角卡片，
+ * 不会再被一圈方框包住。类名是新增的，`.bubble--attach` 仍保留（e2e 依赖它定位）。
+ */
+.bubble--media {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 /* ── 引用条 ───────────────────────────────────────────────────── */

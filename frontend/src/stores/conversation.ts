@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as api from '@/api/conversations'
+import { resetReadSync } from '@/utils/readSync'
 import { useAuthStore } from './auth'
 import { currentEpoch, epochValid } from './session'
 import type { ConversationDetail, ConversationSummary } from '@/types/domain'
@@ -255,6 +256,9 @@ export const useConversationStore = defineStore('conversation', () => {
     readingId.value = null
     readGenByConv.value = new Map()
     loaded.value = false
+    // 登出/换账号：WS 推送路径攒下的待发已读必须一起丢掉，
+    // 否则会把上个账号的 seq 发到下个账号的会话上
+    resetReadSync()
   }
 
   return {

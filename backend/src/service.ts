@@ -5,8 +5,8 @@ import type { Realtime } from './realtime.ts';
 import { fail } from './errors.ts';
 import { hashPassword } from './security.ts';
 import {
-  MAX_UPLOAD_BYTES, MAX_VIDEO_BYTES, blockedExecutableLabel, detectMimeType, isVideo, kindFor, removeUploadFile,
-  sanitizeFilename, uploadPath, writeUpload,
+  MAX_STICKER_BYTES, MAX_UPLOAD_BYTES, MAX_VIDEO_BYTES, blockedExecutableLabel, detectMimeType, isVideo, kindFor,
+  removeUploadFile, sanitizeFilename, uploadPath, writeUpload,
 } from './upload.ts';
 
 interface UserRow {
@@ -815,6 +815,10 @@ export class ChatService {
    * 4. 该附件被用作某个用户头像或群头像 → 任意登录用户允许
    *    （头像会出现在好友列表、群成员、搜索等所有地方，本来就无法限定为「同会话可见」）。
    *
+   * 【为什么不加「本人收藏的表情」一档】表情包的 uploadId 必然属于收藏者本人
+   * （`createSticker` 强制 `upload.owner_id === ownerId`），收藏时压缩产生的新图也是
+   * 本人上传的，所以走第 1 档就够；再加一档是永远命不中的死代码。
+   *
    * 为什么第 2 档要「先看消息引用再看会话成员」而不是直接按 owner 放行：
    * 附件本身没有会话归属，同一张图可以被转发到多个会话，只有顺着 message_attachments 反查才能知道
    * 「这个请求者是否有权看到这张图」。未被任何内容引用的上传（刚传完还没发出去）不能跨人访问，
@@ -951,6 +955,9 @@ export class ChatService {
    * 校验全部归一到 400 INVALID_STICKER 一条文案（契约 §stickers）：
    * 对客户端来说「这个 upload 不能当表情包」是一个判断，区分「不存在/不是你的/不是图片」
    * 只会增加前端分支，而且会成为探测他人 upload 是否存在的侧信道。
+   *
+   * 体积上限走单独的 413 STICKER_TOO_LARGE：这一条是可以被用户自行解决的
+   * （压缩/裁剪后重传），与「这个资源你不能用」不是一回事，混进 400 会让前端无法给出可操作提示。
    */
   createSticker(ownerId: string, uploadId: string) {
     const upload = this.store.get<UploadRow>('SELECT * FROM uploads WHERE id = ?', uploadId);
@@ -959,6 +966,13 @@ export class ChatService {
     if (upload.owner_id !== ownerId) return invalid();
     if (upload.kind !== 'image') return invalid();
     if (!ChatService.STICKER_MIME_TYPES.has(upload.mime_type)) return invalid();
+    // 体积兜底（v2.5）：前端收藏前会压到 512px WebP，但客户端逻辑可以被绕过，
+    // 而表情一旦被收藏就永远躲过 sweep（sweep 把 stickers 视为在用引用），
+    // 服务端必须自己再挡一次，否则「每人存一点」就是无上限的永久磁盘占用。
+    if (upload.size > MAX_STICKER_BYTES) {
+      return fail(413, 'STICKER_TOO_LARGE',
+        `表情包单张不能超过 ${MAX_STICKER_BYTES} 字节（2 MiB），请先压缩或裁剪后再收藏`);
+    }
     // 唯一约束是 (owner, upload)，所以这一条查询与下面的 INSERT 之间不会有「别人的同图」干扰。
     const existing = this.store.get<StickerRow>('SELECT * FROM stickers WHERE owner_id = ? AND upload_id = ?',
       ownerId, uploadId);

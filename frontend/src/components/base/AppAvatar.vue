@@ -9,16 +9,21 @@
  *      不把站内 URL 泄露给第三方图床；
  *   3. `/api/v1/uploads/<uuid>` 站内附件 —— **绝对不能直接塞进 `<img src>`**：
  *      `GET /api/v1/uploads/:id` 要 Bearer token，浏览器发 `<img>` 请求不会带
- *      Authorization，结果是 401 + 破图。必须先 `fetchAttachmentBlob` 拿到 blob，
- *      再 `URL.createObjectURL` 换成 `blob:` URL 渲染，并在卸载/换图时 revoke
- *      释放（否则每换一次头像漏一个几十 KB 的 blob，长会话页会持续涨内存）。
+ *      Authorization，结果是 401 + 破图。必须先 `fetchObjectUrl`（内部走媒体
+ *      缓存层：内存 LRU → IndexedDB → 网络）拿到 `blob:` URL 再渲染，并在
+ *      卸载/换图时 revoke 释放。
+ *
+ * 【为什么走 fetchObjectUrl 而不是 fetchAttachmentBlob + createObjectURL】
+ *   头像在消息列表里滚动时会被反复挂载/卸载，旧写法每次挂载都要重新下载几十 KB
+ *   并新建一个 objectURL。缓存版命中内存时直接复用已有 URL，0 网络请求、0 新对象；
+ *   它的引用计数也保证多个组件同时显示同一头像时不会互相打断。
  *
  * 失败兜底：blob 拉取失败（403 非属主 / 404 已清理 / 网络断）与 `<img>@error`
  * 都退回首字母，不留破图、不抛错。
  */
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { avatarColorOf } from '@/utils/datetime'
-import { fetchAttachmentBlob, revokeObjectUrl } from '@/api/uploads'
+import { fetchObjectUrl, revokeObjectUrl } from '@/api/uploads'
 
 const props = withDefaults(
   defineProps<{
@@ -75,10 +80,10 @@ async function resolveSrc(url: string): Promise<void> {
   }
   const gen = loadGen
   try {
-    const blob = await fetchAttachmentBlob({ id: uploadId })
-    if (gen !== loadGen) return // 期间换图/卸载，丢弃
-    const objectUrl = URL.createObjectURL(blob)
+    // 命中缓存时不发请求、不新建 objectURL；返回值已带一份引用计数
+    const objectUrl = await fetchObjectUrl({ id: uploadId })
     if (gen !== loadGen) {
+      // 期间换图/卸载：多出来的这份引用必须还回去
       revokeObjectUrl(objectUrl)
       return
     }

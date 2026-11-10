@@ -152,17 +152,141 @@ const rows = computed<Row[]>(() => {
   return out
 })
 
-// 手动上报已读的唯一入口 —— 带门禁，见下面 syncReading 的说明。
-// markRead 失败会回滚乐观显示并抛出，这里兜住：门禁逻辑仍是唯一的判据来源，
-// 失败只记日志不打断交互（服务端未收到，下次进会话或推送到达会再校准）。
-async function reportRead(convId: string, seq: number): Promise<void> {
-  if (seq <= 0) return
-  try {
-    await convStore.markRead(convId, seq)
-    msgStore.applyMemberReadSeq(convId, auth.userId, seq)
-  } catch (e) {
-    console.warn('[MessagePane] 已读上报失败，显示已回滚', e)
+/**
+ * 长会话才启用 CSS 懒渲染（content-visibility）。
+ *
+ * 4500+ 条消息一次性 v-for 时，首屏要为每一行做布局/绘制，滚动必然卡；
+ * `content-visibility: auto` 让浏览器跳过视口外的行（元素仍在 DOM 里，
+ * 只是不渲染），`contain-intrinsic-size` 提供占位高度，滚动条比例不崩。
+ *
+ * 【为什么不用虚拟滚动】e2e 与「跳到指定消息」都依赖 `.pane__row` / `.bubble`
+ * 全量存在于 DOM 且行序稳定，删 DOM 的虚拟滚动会直接推翻这些契约。
+ * 短会话（≤ 200 行）不启用，保证小会话与 e2e 的布局跟改动前完全一致。
+ */
+const LONG_CONVERSATION_ROWS = 200
+const longRows = computed(() => rows.value.length > LONG_CONVERSATION_ROWS)
+
+// ── 已读上报：seq 前进判定 + 节流 + 退避 ──────────────────────────────
+/**
+ * 【为什么需要调度器】滚动一次会派生几十个 scroll 事件，旧实现每个事件都排一次
+ * `POST /api/v1/conversations/:id/read`；服务端限流（429）后立刻重试就是请求风暴，
+ * 控制台被 `Rate limit exceeded, retry in 17 seconds` 刷屏。
+ *
+ * 三条约束（缺一不可）：
+ *   1. 只有 lastSeq 真正前进才发请求 —— seq 没变的重发纯属浪费配额。
+ *   2. 两次上报之间至少隔 READ_REPORT_MIN_INTERVAL_MS，期间的触发合并成一次。
+ *   3. 失败后进入退避窗口：15s 起、逐次翻倍、60s 封顶，成功即重置；服务端 429
+ *      文案里的 `retry in N seconds` 作为该轮退避的下限（ApiError 不暴露 Retry-After）。
+ */
+const READ_SYNC_DEBOUNCE_MS = 180
+const READ_REPORT_MIN_INTERVAL_MS = 1500
+const READ_REPORT_BACKOFF_MS = 15_000
+const READ_REPORT_BACKOFF_MAX_MS = 60_000
+/** 服务端限流文案：`Rate limit exceeded, retry in 17 seconds`。 */
+const SERVER_RETRY_RE = /retry in (\d+(?:\.\d+)?)\s*(?:s\b|sec|second)/i
+
+/** 已成功上报到的 seq（按会话分开记，切会话不会互相压制）。 */
+const ackedSeq = new Map<string, number>()
+let lastReportAt = 0
+let backoffUntil = 0
+let backoffMs = READ_REPORT_BACKOFF_MS
+/** 串行化：同一时刻最多一发在途，多出来的只记最新 seq 等落地后补发。 */
+let reportInFlight: Promise<void> | null = null
+let pendingSeq = 0
+
+let readSyncTimer: number | null = null
+/** 当前 readSyncTimer 的到期时刻，用于「已有更早排程就不再延后」。 */
+let readSyncDueAt = 0
+let readRetryTimer: number | null = null
+/** scroll 事件的 rAF 合并句柄（见 onScroll）。 */
+let scrollRaf: number | null = null
+
+function serverRetryDelayMs(e: unknown): number {
+  const msg = e instanceof Error ? e.message : ''
+  const m = SERVER_RETRY_RE.exec(msg)
+  const raw = m?.[1] ?? ''
+  const sec = Number(raw)
+  return Number.isFinite(sec) && sec > 0 ? Math.ceil(sec * 1000) : 0
+}
+
+function clearReadTimers(): void {
+  if (readSyncTimer !== null) {
+    window.clearTimeout(readSyncTimer)
+    readSyncTimer = null
   }
+  readSyncDueAt = 0
+  if (readRetryTimer !== null) {
+    window.clearTimeout(readRetryTimer)
+    readRetryTimer = null
+  }
+}
+
+/** 退避窗口到期后补发一次（窗口内不重复排程）。 */
+function scheduleReadRetry(): void {
+  if (readRetryTimer !== null) return
+  const wait = Math.max(backoffUntil - Date.now(), READ_SYNC_DEBOUNCE_MS)
+  readRetryTimer = window.setTimeout(() => {
+    readRetryTimer = null
+    scheduleReadSync()
+  }, wait)
+}
+
+/** 真正发一次上报。调用方必须已经过「seq 前进 / 节流 / 退避」判定。 */
+async function flushReadReport(convId: string, seq: number): Promise<void> {
+  if (reportInFlight) {
+    // 在途时只记下更新的 seq，落地后统一补发，绝不并发
+    pendingSeq = seq
+    return
+  }
+  reportInFlight = (async () => {
+    try {
+      await convStore.markRead(convId, seq)
+      msgStore.applyMemberReadSeq(convId, auth.userId, seq)
+      ackedSeq.set(convId, seq)
+      lastReportAt = Date.now()
+      backoffMs = READ_REPORT_BACKOFF_MS
+      backoffUntil = 0
+    } catch (e) {
+      // markRead 内部已回滚乐观显示（未读红点回来），这里只负责退避，不打断交互。
+      const serverMs = serverRetryDelayMs(e)
+      const wait = Math.min(Math.max(backoffMs, serverMs), READ_REPORT_BACKOFF_MAX_MS)
+      backoffUntil = Date.now() + wait
+      backoffMs = Math.min(wait * 2, READ_REPORT_BACKOFF_MAX_MS)
+      // 只在进入退避时记一条：失败重试不再逐次刷屏
+      console.warn('[MessagePane] 已读上报失败，显示已回滚，进入退避', wait, e)
+      scheduleReadRetry()
+    } finally {
+      reportInFlight = null
+      // 在途期间 lastSeq 又前进了 → 排一次补发（仍受最小间隔约束）
+      if (pendingSeq > 0) {
+        pendingSeq = 0
+        scheduleReadSync()
+      }
+    }
+  })()
+  await reportInFlight
+}
+
+/** 已读上报的唯一入口：只做「该不该发」的判定，真正的请求在 flushReadReport。 */
+function reportRead(convId: string, seq: number): void {
+  if (seq <= 0) return
+  // ① 没前进就不发
+  if (seq <= (ackedSeq.get(convId) ?? 0)) return
+  // ② 后台标签页一律不发，回前台由 visibilitychange 统一补
+  if (document.hidden) return
+  const now = Date.now()
+  // ③ 退避窗口内一颗子弹都不发
+  if (now < backoffUntil) {
+    scheduleReadRetry()
+    return
+  }
+  // ④ 距上次成功上报不足最小间隔 → 合并成一次延后触发
+  const wait = lastReportAt + READ_REPORT_MIN_INTERVAL_MS - now
+  if (wait > 0) {
+    scheduleReadSync(wait)
+    return
+  }
+  void flushReadReport(convId, seq)
 }
 
 /**
@@ -179,11 +303,10 @@ async function reportRead(convId: string, seq: number): Promise<void> {
  * 不满足时把 readingId 清空 —— 之后新消息不会再触发自动已读，
  * 列表上的未读红点得以保留（任务书 R5 的核心验收项）。
  */
-let readSyncTimer: number | null = null
-
 function syncReading(): void {
   const visible =
     route.name === 'chat' &&
+    !document.hidden &&
     isElementVisible(scroller.value) &&
     !!conversation.value
   if (!visible) {
@@ -191,20 +314,40 @@ function syncReading(): void {
     return
   }
   convStore.setReading(props.convId)
-  const last = msgStore.lastSeqOf(props.convId)
-  if (last > 0) void reportRead(props.convId, last)
+  reportRead(props.convId, msgStore.lastSeqOf(props.convId))
 }
 
-/** 合并同一帧内的多次触发（滚动 + 可见性 + 路由可能同时发生）。 */
-function scheduleReadSync(): void {
+/**
+ * 合并同一帧内的多次触发（滚动 + 可见性 + 路由 + 新消息可能同时发生）。
+ * delay 用于「距上次上报不足最小间隔」的补发；下限仍是 READ_SYNC_DEBOUNCE_MS。
+ *
+ * 【为什么不是「每次调用都重置定时器」】滚动时每帧都会调到这里，纯 trailing 防抖
+ * 会被无限延后 —— 一直滚就一直不上报。所以只接受**更早**的到期时间：已有排程
+ * 比本次需求更早时直接保留，保证触发后最多一个防抖窗口内必定执行一次。
+ */
+function scheduleReadSync(delay: number = READ_SYNC_DEBOUNCE_MS): void {
+  // 后台标签页不排程：回前台时 visibilitychange 会补一次
+  if (document.hidden) return
+  const wait = Math.max(delay, READ_SYNC_DEBOUNCE_MS)
+  const dueAt = Date.now() + wait
+  if (readSyncTimer !== null && readSyncDueAt <= dueAt) return
   if (readSyncTimer !== null) window.clearTimeout(readSyncTimer)
+  readSyncDueAt = dueAt
   readSyncTimer = window.setTimeout(() => {
     readSyncTimer = null
+    readSyncDueAt = 0
     syncReading()
-  }, 0)
+  }, wait)
 }
 
 function onVisibilityChange(): void {
+  if (document.hidden) {
+    // 切到后台：掐掉所有待发请求，并退出阅读态（后续推送不得自动已读）
+    clearReadTimers()
+    convStore.setReading(null)
+    return
+  }
+  // 回前台：补一次（若仍在退避窗口内，reportRead 会重新排退避补发）
   scheduleReadSync()
 }
 
@@ -217,26 +360,43 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibilityChange)
   window.removeEventListener('focus', onVisibilityChange)
-  if (readSyncTimer !== null) {
-    window.clearTimeout(readSyncTimer)
-    readSyncTimer = null
+  clearReadTimers()
+  if (scrollRaf !== null) {
+    window.cancelAnimationFrame(scrollRaf)
+    scrollRaf = null
   }
+  pendingSeq = 0
+  ackedSeq.clear()
   // 卸载即离开阅读态，避免后续推送被误判为「正在读」
   convStore.setReading(null)
 })
 
 /**
- * 上传中的滚动位置维护 + 阅读态刷新。
+ * 滚动位置维护（rAF 合并）+ 阅读态刷新。
+ *
+ * 【为什么不在事件回调里直接读 layout】一个滚动手势会派发几十个 scroll 事件，
+ * 每个都读一次 scrollHeight/scrollTop/clientHeight 就是几十次强制重排；这里只
+ * 标记「本帧已排队」，真正的读取集中到 applyScrollState，每帧最多一次。
  *
  * 贴底时才认为「看到了最新消息」→ 这时才允许自动已读。
  * 用户正在往上翻历史时新消息不吸底、也不算已读（任务书 R3/R5）。
  */
 function onScroll(): void {
+  if (scrollRaf !== null) return
+  scrollRaf = window.requestAnimationFrame(() => {
+    scrollRaf = null
+    applyScrollState()
+  })
+}
+
+/** 每帧至多执行一次：这里才读 layout。 */
+function applyScrollState(): void {
   const el = scroller.value
   if (!el) return
-  const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+  const scrollTop = el.scrollTop
+  const distance = el.scrollHeight - scrollTop - el.clientHeight
   atBottom.value = distance < 40
-  if (el.scrollTop < 60 && msgStore.hasMoreOlder(props.convId) && !loadingOlder.value) {
+  if (scrollTop < 60 && msgStore.hasMoreOlder(props.convId) && !loadingOlder.value) {
     void loadOlder()
   }
   scheduleReadSync()
@@ -254,10 +414,24 @@ async function loadOlder(): Promise<void> {
   el.scrollTop = prevTop + (newHeight - prevHeight)
 }
 
+/**
+ * 吸底。
+ *
+ * 【长会话为什么要补一帧】`content-visibility: auto` 下视口外的行只有估算高度，
+ * `scrollHeight` 是被估过的；第一次赋值后浏览器才开始布局真实行、总高变大，
+ * 视口于是悬在底部上方（「回到底部」按钮会诈尸）。下一帧再贴一次即可对齐。
+ * 短会话不走这条分支，行为与改动前完全一致。
+ */
 function scrollToBottom(): void {
   const el = scroller.value
   if (!el) return
   el.scrollTop = el.scrollHeight
+  if (!longRows.value) return
+  window.requestAnimationFrame(() => {
+    const cur = scroller.value
+    if (!cur) return
+    cur.scrollTop = cur.scrollHeight
+  })
 }
 
 // ── 消息置顶（ux2-contract §九） ─────────────────────────────────────
@@ -871,7 +1045,12 @@ watch(
         </ul>
       </div>
 
-      <div ref="scroller" class="pane__scroll" @scroll="onScroll">
+      <div
+        ref="scroller"
+        class="pane__scroll"
+        :class="{ 'pane__scroll--long': longRows }"
+        @scroll.passive="onScroll"
+      >
         <div v-if="loadingOlder" class="pane__loading"><AppSkeleton :count="2" :height="12" /></div>
 
         <div v-if="rows.length === 0" class="pane__blank">
@@ -1041,6 +1220,14 @@ watch(
 }
 .pane__row {
   position: relative;
+}
+/* 长会话的懒渲染：视口外的行不布局、不绘制（元素仍在 DOM 里，所以
+ * `.pane__row` / `.bubble` 的选择器、数量、textContent 语义都没变）。
+ * contain-intrinsic-size 用 `auto <fallback>`：渲染过一次后浏览器会记住真实
+ * 高度，没渲染过的先按 64px 占位，滚动条比例不会崩。 */
+.pane__scroll--long .pane__row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 64px;
 }
 .pane__retry {
   display: inline-flex;

@@ -1,0 +1,36 @@
+
+=== pm 门禁回归  BASE=http://localhost:5173  BACKEND=http://127.0.0.1:3099 ===
+
+会话：a57f7e34-62f6-4563-b765-e36c1dbea52d
+
+
+──── SEC-02 注销后的隐私清理 ────
+PASS  前置：注销前会话有气泡  —— bubble=30
+PASS  注销后立即离开受保护页面（URL 回 /login）  —— url=http://localhost:5173/login
+PASS  注销后页面不再渲染消息正文  —— 正文可见=false bubble=0
+PASS  注销后无残留会话/好友行  —— item=0 row=0
+PASS  换账号后首帧身份即为新账号（无旧账号残留窗口）  —— 首帧 title="闸门 B" 稳定后 title="闸门 B"（应为「闸门 B」）
+
+──── FE-01 未读门禁（停在列表/后台标签页不得自动已读） ────
+PASS  前置：会话列表已加载出会话项  —— item=4
+PASS  前置：B 成功发送消息  —— seq=68
+PASS  停在列表屏时未读红点保留  —— badge="1"
+PASS  服务端未读未被清零（说明前端没误报已读）  —— 服务端 unreadCount=1
+PASS  进入正文后未读消除  —— 服务端 unreadCount=0
+SKIP  浏览器后台标签页收到消息未被自动已读  —— headless 下无法把页面真正切到后台（visibilityState=visible），判据无法成立 → 待真机/有头浏览器验证
+
+──── FE-02 已读上报失败要回滚，不伪装成功 ────
+PASS  前置：列表上有未读  —— badge="1"
+PASS  已读失败后未读红点回滚（未伪装成功）  —— 失败前="1" 失败后="1"
+PASS  服务端确实仍是未读（前端回滚与服务端一致）  —— 服务端 unreadCount=1
+
+=== 汇总：14 项 —— 通过 13，失败 0，待验 1 ===
+  SKIP  浏览器后台标签页收到消息未被自动已读  —— headless 下无法把页面真正切到后台（visibilityState=visible），判据无法成立 → 待真机/有头浏览器验证
+
+截图见 docs/evidence/gate-*.png
+数据仅写入隔离后端 http://127.0.0.1:3099，未触碰生产。
+「待验」项不计入通过，需真机或有头浏览器补测。
+
+
+
+EXIT=0

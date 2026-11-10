@@ -1,0 +1,105 @@
+
+=== v2 需求验收  BASE=http://localhost:5173  BACKEND=http://127.0.0.1:3099  RUN=4ojzw2 ===
+
+临时素材：C:\Users\31626\AppData\Local\Temp\aitr-v2-N7lrYi
+
+会话 AB=a57f7e34-62f6-4563-b765-e36c1dbea52d  B.uid=10003
+
+gate_a 头像：upload=201 patch=200 url=/api/v1/uploads/709e935b-0eeb-4333-9dbd-7985c8f3b7b3
+
+
+──── 需求 5：管理员初始化与重置门禁 ────
+PASS  root/12345678 可登录  —— status=200
+PASS  root 是管理员且 uid=1001  —— role=admin uid=1001
+PASS  root 是唯一管理员  —— admins=root
+PASS  reset-db.mjs 没有 --confirm 时拒绝执行  —— exit=1 输出含 confirm=true
+
+──── 需求 1：桌面个人信息抽屉 ────
+PASS  桌面外壳就绪  —— url=http://localhost:5173/chat
+PASS  左上角头像可点（aria-haspopup=dialog）  —— count=1 haspopup=dialog
+PASS  抽屉外头像显示真实图片（需求 1 的原始 bug）  —— img=1 可见=true
+PASS  侧栏底部不再有主题/退出按钮  —— 退出按钮=0
+PASS  点左上角头像打开左侧抽屉  —— 可见=true
+PASS  抽屉宽度覆盖会话列表列且紧贴侧栏  —— drawer(x=60.0,w=288.0) sidebarW=288 railW=60
+PASS  抽屉含「详细资料 / 主题 / 退出登录」三项  —— entries=["详细资料","主题","退出登录"]
+PASS  抽屉内主题入口可展开出主题选择器  —— 展开=true tp__card=7（期望 7）
+PASS  退出登录弹二次确认  —— 可见=true 文案含「退出」=true
+PASS  取消后不退出登录  —— url=/chat 弹层仍可见=false
+
+──── 需求 3：主题系统 ────
+PASS  预置主题 ≥5 套 + 自定义  —— themes=["浅色","深色","海洋","森林","樱花","午夜","自定义"]
+PASS  切「深色」→ data-theme=dark / mode=dark  —— {"theme":"dark","mode":"dark"}
+PASS  切「海洋」→ data-theme=ocean / mode=light  —— {"theme":"ocean","mode":"light"}
+PASS  切「午夜」→ data-theme=midnight / mode=dark  —— {"theme":"midnight","mode":"dark"}
+PASS  自定义提供 8 个取色器（含聊天框/字体/背景）  —— labels=["主色","聊天区背景","我的气泡背景","我的气泡文字","对方气泡背景","对方气泡文字","面板背景","主文字色"]
+PASS  自定义背景支持 纯色/渐变/图片  —— seg=["纯色","渐变","图片"]
+PASS  自定义主色实时落到 --color-brand-500  —— --color-brand-500=#c81e5a
+PASS  选「渐变」后聊天区背景变量为渐变  —— --chat-canvas-image=linear-gradient(160deg, #eef2f7, #eef2f7)…
+PASS  自定义主题刷新后仍生效  —— theme=custom primary=#c81e5a stored=custom
+
+──── 需求 4：多图多文件 / 可只发附件 / Enter 规则 ────
+PASS  进入会话成功
+PASS  多选两张图片都能进入待发送队列  —— done=2
+PASS  只有附件、没有文字时发送按钮可用  —— disabled=false title=发送
+PASS  提示不再要求附带文字  —— title=发送
+PASS  无文字也能直接把图片发出去  —— rows 30→31
+PASS  纯图片消息气泡：2 张图、无正文节点、不是失败态  —— {"atts":2,"imgs":2,"hasTextNode":false,"failed":false}
+PASS  有附件时 Enter 不发送（只换行）  —— rows 31→31 textarea 含换行=true
+PASS  Ctrl+Enter 可发送带附件的消息  —— rows=32
+PASS  一条消息里同时有文字与 2 张图  —— atts=2 imgs=2 text="多图4ojzw2 · 图文同条"
+PASS  带文字发图片时文字不被吞（需求 4 的核心 bug）  —— 气泡正文="多图4ojzw2 · 图文同条"
+PASS  图片附件数量被限制在 9 以内  —— 队列=9（塞了 10 个文件）
+PASS  视频附件最多 1 个  —— 队列=1（塞了 2 个 mp4）
+
+──── 需求 4b：「发送失败」误报回归 ────
+PASS  消息其实已落库（WS 把气泡补上，没有丢）  —— 气泡数=1
+PASS  迟到的错误不再弹「发送失败」（不误报）  —— toasts=[]
+PASS  那条已落库的消息没有出现「重试」按钮  —— retry 按钮=0
+PASS  重载后行数只增不减（没有因为失败态被回滚掉）  —— rows 30→31
+PASS  真失败时那条消息进入失败态并给出「重试」  —— retry=1
+PASS  真失败时如实提示「发送失败」  —— toasts=["发送失败：Network Error","发送失败：Network Error"]
+PASS  刷新后假失败/真失败都不残留（历史以服务端为准）  —— 真失败消息已不在时间线（服务端无此条）
+
+──── 需求 2：点对方头像 → 访客资料页 ────
+PASS  前置：gate_b 已发出消息  —— seq=207
+PASS  前置：对方气泡已渲染  —— 文本=需求2 对方气泡 4ojzw2
+PASS  对方气泡旁头像可点（存在按钮包裹）  —— count=1
+PASS  点对方头像跳到 /chat/user/:userId  —— url=/chat/user/e2f87916-588d-4724-86b8-87408c105c10
+PASS  访客资料页渲染对方昵称  —— 可见=true name="闸门 B"
+PASS  访客资料页显示对方 UID  —— uid 文本="UID #10003" 期望含 10003
+PASS  好友关系下动作是「发消息」  —— actions=["发消息"]
+
+──── 需求 6：广场 ────
+PASS  桌面侧栏有广场入口  —— count=1
+PASS  进入广场页  —— url=/chat/square
+PASS  发帖成功后信息流出现该动态  —— 文案=v2 广场 4ojzw2：第一条动态
+PASS  正文超过 5000 字时不允许发布  —— count="5001 / 5000" danger=true disabled=true
+PASS  广场发帖可上传图片  —— thumbs=1
+PASS  图文动态发布成功  —— 文案=v2 广场图文 4ojzw2
+PASS  图文动态里图片真渲染（img 存在）  —— img 存在=true
+PASS  点赞后 aria-pressed=true  —— false → true
+PASS  再点取消点赞回到 aria-pressed=false  —— pressed=false
+PASS  发表评论后出现在评论区  —— 评论=v2 评论 4ojzw2
+PASS  删除动态需二次确认  —— 可见=true
+PASS  删除后动态从信息流消失  —— #post-f8b0601a-f142-4566-ba04-9312bf97d6cd count=0
+PASS  广场拒绝通用文件附件（400 ATTACHMENT_LIMIT）  —— status=400 code=ATTACHMENT_LIMIT
+PASS  未登录访问 /chat/square 被重定向到登录页  —— url=/login
+
+──── 需求 1：移动端个人信息上拉抽屉 ────
+PASS  移动端外壳就绪  —— url=http://localhost:5173/chat
+PASS  底部导航第三位是「个人信息」而不是「更多」  —— labels=["聊天","联系人","个人信息"]
+PASS  点第三位打开底部上拉抽屉  —— 可见=true
+PASS  初始为简要态（标题「个人信息」）  —— title="个人信息"
+PASS  简要态含详细资料/主题/退出登录  —— entries=["详细资料","主题","退出登录"]
+PASS  上拉/点「展开」切到全屏详细资料  —— psheet--full=1
+PASS  全屏态渲染详细资料（ProfileView）  —— profile=1
+PASS  全屏态标题变「详细资料」  —— title="详细资料"
+PASS  移动端退出登录二次确认可见且可点击（不被抽屉遮住）  —— 可见=true 可点=true
+
+════════ 汇总 ════════
+总计 72 项：PASS 72 / FAIL 0 / DEFECT 0 / SKIP 0
+
+截图目录：B:\AITrance\docs\evidence
+
+
+EXIT=0

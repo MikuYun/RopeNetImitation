@@ -17,6 +17,18 @@ import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import * as api from '@/api/stickers'
 import { STICKER_PAGE_SIZE, type Sticker } from '@/api/stickers'
+import { fetchAttachmentBlob, uploadFile } from '@/api/uploads'
+import {
+  STICKER_COMPRESS_MIN_BYTES,
+  STICKER_COMPRESS_SAVING_RATIO,
+  STICKER_TARGET_MIME,
+  compressImageForSticker,
+  isStickerStaticMime,
+  isStickerTooLarge,
+  stickerFileName,
+  stickerLimitText,
+} from '@/utils/imageCompress'
+import type { Attachment } from '@/types/domain'
 import { currentEpoch, epochValid } from './session'
 
 export const useStickerStore = defineStore('sticker', () => {
@@ -33,6 +45,15 @@ export const useStickerStore = defineStore('sticker', () => {
    * 这个 store 就会永远卡在 loading=true，之后再也加载不出来。
    */
   let loadToken = 0
+
+  /**
+   * 「原附件 id → 我复制出来的 upload id」映射（仅本次会话有效）。
+   *
+   * 收藏**别人的**图片时要复制字节成自己的上传（后端要求表情必须是本人的 upload），
+   * 复制出来的 upload id 和原 attachment.id 不是同一个，光按 uploadId 查重会漏掉：
+   * 同一条消息连点两次「存为表情」就会多存一份图。这里按附件 id 记住复制结果。
+   */
+  const copiedUploads = new Map<string, string>()
 
   /** 代际不符 = 上一个账号的收藏，一律读不到。 */
   function isFresh(): boolean {
@@ -123,6 +144,101 @@ export const useStickerStore = defineStore('sticker', () => {
   }
 
   /**
+   * 收藏一张图片消息为表情，**收藏时先压缩**。
+   *
+   * 为什么压缩：表情包是长期占用服务器磁盘的收藏品（被 stickers 引用的 upload
+   * 永远不会被保留策略清掉 —— sweep 把 stickers 算作在用引用），原图动辄 2~5 MB，
+   * 而表情显示上限只有 512px。这里把原图缩到 512px 转 WebP 后重新上传，再把
+   * 「压缩图」收藏成表情，通常只剩原来的 5%~20%。
+   *
+   * 三种路径（依次尝试，前面的失败就退到后面，绝不让收藏本身失败）：
+   * 1. **压缩重传**：静图且 >64 KiB → 取 blob → 压到 512px WebP → 上传 → 收藏新图。
+   *    只有压完确实小 20% 以上才采用（否则多存一份反而更浪费）。
+   * 2. **直接收藏原上传**：图是我的、体积小、或 GIF（转码会丢动画）→ 引用原 upload，
+   *    零额外存储。
+   * 3. **复制字节再收藏**：原上传不属于我（收藏别人消息里的图，后端要求表情必须
+   *    是自己的上传）→ 取字节复制一份成自己的上传（GIF 也走这条，保住动画）。
+   *
+   * 兜底：任何一步抛错都退到下一档；只有「原图超过上限且既压不下去也复制不了」才抛错，
+   * 由调用方 toast 告诉用户裁剪。
+   */
+  async function saveFromAttachment(attachment: Attachment): Promise<Sticker> {
+    // 代际校验交给内部 `add()`：三条路径最终都要走它，这里不必重复判定。
+    dropIfStale()
+
+    // ⓪ 这条消息的图之前已经复制成我的上传了：直接收藏那一份，不要再压/再传一次。
+    // 否则连点两次「存为表情」会各生成一个 upload，磁盘多花一倍（见 copiedUploads 注释）。
+    const cached = copiedUploads.get(attachment.id)
+    if (cached) {
+      try {
+        return await add(cached)
+      } catch (e) {
+        // 那份复制出来的上传可能已经不在了（删表情时服务器会把无人引用的上传连文件一起清），
+        // 忘掉缓存重新走一遍完整流程即可。
+        if ((e as { code?: string }).code !== 'INVALID_STICKER') throw e
+        copiedUploads.delete(attachment.id)
+      }
+    }
+
+    // ⓪' 这张原图已经是我的表情了（旧版本收藏的、或通过接口收藏的）→ 直接返回那一条。
+    // 不这么做的话会走第 ① 档压出第二个 upload，同一个源图变成两条表情，白占一份磁盘。
+    // 列表还没拉过就先拉一次；拉失败只是拿不到去重信息，不影响继续收藏。
+    if (!loaded.value) await ensureLoaded()
+    const saved = items.value.find((item) => item.uploadId === attachment.id)
+    if (saved) return saved
+
+    // ① 压缩重传。
+    if (isStickerStaticMime(attachment.mimeType) && attachment.size > STICKER_COMPRESS_MIN_BYTES) {
+      const compressedId = await compressThenUpload(attachment)
+      if (compressedId) return add(compressedId)
+    }
+
+    // ② 直接收藏原上传。
+    try {
+      return await add(attachment.id)
+    } catch (e) {
+      // 只有「这个 upload 不能当表情」（典型：不是我的上传）才继续走第 ③ 档；
+      // 网络/鉴权错误直接上抛，重试也没意义。
+      if ((e as { code?: string }).code !== 'INVALID_STICKER') throw e
+    }
+
+    // ③ 复制字节成自己的上传后再收藏。
+    if (isStickerTooLarge(attachment.size)) {
+      throw new Error(`图片超过 ${stickerLimitText()}，请先裁剪后再收藏`)
+    }
+    const source = await fetchAttachmentBlob(attachment)
+    const mimeType = source.type || attachment.mimeType
+    const copy = new File([source], stickerFileName(attachment.name, mimeType), { type: mimeType })
+    const uploaded = await uploadFile(copy)
+    copiedUploads.set(attachment.id, uploaded.id)
+    return add(uploaded.id)
+  }
+
+  /**
+   * 压缩后上传，返回新 uploadId；不适配/失败返回 null（由调用方退到下一档）。
+   *
+   * 单独抽出来是因为它要吞掉所有异常：压缩是**优化**，不是收藏的前置条件，
+   * 浏览器不支持 canvas、取流失败、上传失败都不该让用户存不了表情。
+   */
+  async function compressThenUpload(attachment: Attachment): Promise<string | null> {
+    try {
+      const source = await fetchAttachmentBlob(attachment)
+      const compressed = await compressImageForSticker(source)
+      // 没变小 20% 以上就别多存一份 —— 压缩的意义是省磁盘，不是走流程。
+      if (!compressed || isStickerTooLarge(compressed.size)) return null
+      if (compressed.size >= attachment.size * STICKER_COMPRESS_SAVING_RATIO) return null
+      // 不支持 WebP 编码的浏览器会让 toBlob 回退成 PNG，扩展名必须跟真实 type 走。
+      const mimeType = compressed.type || STICKER_TARGET_MIME
+      const file = new File([compressed], stickerFileName(attachment.name, mimeType), { type: mimeType })
+      const uploaded = await uploadFile(file)
+      copiedUploads.set(attachment.id, uploaded.id)
+      return uploaded.id
+    } catch {
+      return null
+    }
+  }
+
+  /**
    * 删除一个表情。
    *
    * 采用「先请求成功再改本地」：表情格子上有二次确认弹窗，用户已经点过一次，
@@ -148,6 +264,7 @@ export const useStickerStore = defineStore('sticker', () => {
     loading.value = false
     error.value = null
     loadedEpoch.value = null
+    copiedUploads.clear()
   }
 
   return {
@@ -162,6 +279,7 @@ export const useStickerStore = defineStore('sticker', () => {
     ensureLoaded,
     refresh,
     add,
+    saveFromAttachment,
     remove,
     resetFor,
     reset,

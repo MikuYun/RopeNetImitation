@@ -19,6 +19,7 @@ import { useMessageStore } from '@/stores/message'
 import { usePinsStore } from '@/stores/pins'
 import { usePresenceStore } from '@/stores/presence'
 import { useUiStore } from '@/stores/ui'
+import { scheduleReadReport } from '@/utils/readSync'
 import { wsClient, type ConnState } from './client'
 import type { z } from 'zod'
 import {
@@ -349,11 +350,12 @@ function dispatch(env: InboundEnvelope): void {
           void conversationStore.fetchAll()
         }
         // 门禁：必须真的在阅读中才上报（且不是自己发的）
+        // 走 readSync 的节流闸：一条消息一发会把服务端限流（429）刷满，
+        // 首条仍然即时发出，只有最小间隔内的追加被合并成一次尾随上报。
         if (isReading && !isMine && msg.seq > conv.lastReadSeq) {
-          // markRead 失败会回滚乐观显示并抛出；这里显式兜住，避免未处理的 rejection
-          void conversationStore.markRead(msg.conversationId, msg.seq).catch((e) => {
-            console.warn('[ws] 自动已读上报失败，显示已回滚', e)
-          })
+          scheduleReadReport(msg.conversationId, msg.seq, (id, seq) =>
+            conversationStore.markRead(id, seq),
+          )
         }
       } else {
         // 新会话（别人给我建的 / 我被拉进群）

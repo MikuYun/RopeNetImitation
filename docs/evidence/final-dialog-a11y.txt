@@ -1,0 +1,20 @@
+PASS  弹层打开时焦点自动进入弹层  —— 焦点=BUTTON/
+PASS  打开瞬间焦点已离开触发按钮  —— title=
+PASS  弹层 Tab 在最后一个元素处循环回首个（未回归）  —— 焦点=BUTTON/
+PASS  弹层 Shift+Tab 在首个元素处循环到末尾（未回归）  —— 焦点=BUTTON/创建
+PASS  弹层 Esc 可关闭（未回归）
+PASS  弹层关闭后焦点归还触发按钮  —— 焦点=BUTTON title=发起群聊
+PASS  手机「个人信息」面板可打开
+PASS  手机面板打开时焦点进入面板  —— 焦点=BUTTON/展开
+PASS  手机「个人信息」面板 Esc 可关闭
+PASS  手机面板 Esc 关闭后焦点归还「个人信息」按钮  —— 焦点=BUTTON/个人信息 cls=mnav__tab
+PASS  手机面板 Tab 焦点不逃逸到 body  —— 焦点=BUTTON/展开
+PASS  手机「个人信息」面板可关闭（关闭按钮，未回归）
+PASS  手机面板 Shift+Tab 焦点不逃逸到 body  —— 焦点=BUTTON/上滑查看完整资料
+PASS  手机「个人信息」面板可关闭（关闭按钮，未回归）
+PASS  手机面板遮罩点击仍可关闭（未回归）
+
+汇总：15/15 PASS
+
+
+EXIT=0

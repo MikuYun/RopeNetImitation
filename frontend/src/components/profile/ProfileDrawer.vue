@@ -148,7 +148,10 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <Transition name="pdrawer">
+  <!-- 显式 duration：<Transition> 默认只读根节点（.pdrawer-mask）的过渡时长，
+       遮罩淡入只有 200ms，若不给就会在 200ms 时强行结束面板 300ms 的滑入，
+       面板会卡在 -33% 处「跳」一下。 -->
+  <Transition name="pdrawer" :duration="{ enter: 300, leave: 180 }">
     <div v-if="isOpen" class="pdrawer-mask" @click.self="close">
       <aside
         ref="panelRef"
@@ -263,9 +266,12 @@ onUnmounted(() => {
   background: rgb(14 20 26 / 0.32);
 }
 .pdrawer {
+  /* 起点 x 抽成局部变量：滑入位移要用它算「整块出屏」的距离，
+     抽出来后断点只需覆盖这一处，不会出现 left 改了、位移没改的错位。 */
+  --pdrawer-left: var(--spacing-rail);
   position: absolute;
   inset-block: 0;
-  left: var(--spacing-rail);
+  left: var(--pdrawer-left);
   width: var(--spacing-sidebar);
   max-width: 100vw;
   display: flex;
@@ -278,7 +284,7 @@ onUnmounted(() => {
 }
 @media (max-width: 1023px) {
   .pdrawer {
-    left: var(--spacing-rail-compact, var(--spacing-rail));
+    --pdrawer-left: var(--spacing-rail-compact, var(--spacing-rail));
     width: var(--spacing-sidebar-compact, var(--spacing-sidebar));
   }
 }
@@ -448,21 +454,64 @@ onUnmounted(() => {
   color: var(--app-text-muted);
 }
 
-/* 从左侧淡入滑出 */
-.pdrawer-enter-active,
-.pdrawer-leave-active {
-  transition: opacity var(--dur, 0.18s) var(--ease-out, ease);
-}
+/* 从左侧整列滑入 —— 抽屉的隐喻是「从 rail 边缘整块长出来」。
+ * 只做 opacity 会让人感觉是「直接出现」，所以位移必须走满一整列宽。
+ * 为什么是 calc(-100% - rail)：面板 left 起点就在 rail 右缘（见上），
+ * 只挪自身宽度时右缘还会留在 rail 上、动画开头能看见一截压在侧栏上；
+ * 多挪一个 rail 宽，右缘才正好停在 x = 0（完全出屏）。
+ * 只对 transform/opacity 做过渡：两者都在合成器上跑，不触发重排；
+ * width/left/box-shadow 每一帧都会重排或重绘，绝不做过渡。 */
 .pdrawer-enter-active .pdrawer,
 .pdrawer-leave-active .pdrawer {
-  transition: transform var(--dur, 0.18s) var(--ease-out, ease);
+  will-change: transform, opacity;
 }
-.pdrawer-enter-from,
-.pdrawer-leave-to {
-  opacity: 0;
+.pdrawer-enter-active .pdrawer {
+  /* 起步快、收尾稳；300ms 是「肉眼可辨」与「不拖沓」之间的上限 */
+  transition: transform 300ms cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+.pdrawer-leave-active .pdrawer {
+  /* 离场必须比入场快：用户已经决定关闭，多等一帧都是拖沓 */
+  transition: transform 180ms cubic-bezier(0.4, 0, 1, 1);
 }
 .pdrawer-enter-from .pdrawer,
 .pdrawer-leave-to .pdrawer {
-  transform: translateX(-8%);
+  transform: translateX(calc(-100% - var(--pdrawer-left)));
+}
+
+/* 遮罩：入场上淡入 200ms（比面板 300ms 短），离场不淡出。
+ * 离场为什么不让遮罩 opacity 归零：面板是遮罩的子节点，遮罩一旦透明
+ * 会把面板的滑出动画一起「藏掉」，用户看到的就是「淡出 + 已经没了」，
+ * 反而回到改之前的问题。所以离场把遮罩固定在 opacity:1，
+ * 让 180ms 的滑出完整被看见，最后一帧整层一起移除。 */
+.pdrawer-enter-active {
+  transition: opacity 200ms var(--ease-out, ease);
+}
+.pdrawer-leave-active {
+  transition: none;
+}
+.pdrawer-enter-from {
+  opacity: 0;
+}
+.pdrawer-leave-to {
+  opacity: 1;
+}
+
+/* 减少动效：位移与淡入淡出全部去掉，直接切换。
+ *（<Transition> 上的 :duration 仍会等 300/180ms 再移除节点，
+ *  但那时内容已可见可交互，用户感知不到延迟。） */
+@media (prefers-reduced-motion: reduce) {
+  .pdrawer-enter-active,
+  .pdrawer-leave-active {
+    transition: none;
+  }
+  .pdrawer-enter-active .pdrawer,
+  .pdrawer-leave-active .pdrawer {
+    transition: none;
+    will-change: auto;
+  }
+  .pdrawer-enter-from .pdrawer,
+  .pdrawer-leave-to .pdrawer {
+    transform: none;
+  }
 }
 </style>

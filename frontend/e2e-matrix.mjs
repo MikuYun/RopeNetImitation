@@ -661,8 +661,12 @@ async function main() {
         readHits += 1
         const mine = readHits
         if (mine === 1) {
-          // 第一发（旧）：拖 1800ms 再返回 500
-          await sleep(1800)
+          // 第一发（旧）：拖 4000ms 再返回 500。
+          // v2.6 起已读上报统一走 readSync 节流（MIN_INTERVAL_MS=1500，见
+          // frontend/src/utils/readSync.ts），所以第 2 发最早也要 1500ms 后才会发出；
+          // 旧响应的延迟必须明显长于「1500ms 节流 + openConv 耗时」，才能保证
+          // 「新请求先成功、旧失败后到达」这个并发反例的前提成立。
+          await sleep(4000)
           await route
             .fulfill({
               status: 500,
@@ -693,15 +697,22 @@ async function main() {
         await until(async () => (await page.locator('.bubble').count()) > 0, 15_000)
         racyBubbles = (await page.locator('.bubble').count().catch(() => 0)) || 0
       }
-      await sleep(250)
-      await page.evaluate(() => {
-        const el = document.querySelector('.pane__scroll')
-        if (el) {
-          el.scrollTop = Math.max(0, el.scrollTop - 10)
-          el.dispatchEvent(new Event('scroll'))
-        }
-        document.dispatchEvent(new Event('visibilitychange'))
-      })
+      // 第 2 发必须来自**另一条上报通道**。
+      // v2.6 起 MessagePane 的 flushReadReport 自身就是串行的（reportInFlight +
+      // pendingSeq），滚动/visibilitychange 只会把 seq 记进 pendingSeq，在途期间
+      // 不会再发第二发 —— 所以旧写法（滚一下 + dispatch visibilitychange）在
+      // 新版产品上永远只有 readHits=1，前置不成立。
+      // ws/handlers.ts → utils/readSync.ts 是**另一个独立的串行器**（文件头「为什么
+      // 不做成两条路径共用一个调度器」写明了这是有意为之），因此让 gate_b 再发一条
+      // 消息，WS 推送会立刻经 readSync 发出一发，与第 1 发（被延迟的）真正并发。
+      await sleep(400)
+      try {
+        await sendAs('gate_b', convAB, `并发反例第二发（第 ${attempt} 次）`)
+      } catch (e) {
+        console.log(
+          `   … 并发反例：第 ${attempt} 次第二发消息发送失败（${String(e).slice(0, 60)}）…`,
+        )
+      }
       await sleep(4000)
       await page.unroute('**/api/v1/conversations/*/read')
       await ensureNotLimited('gate_a', 90_000)

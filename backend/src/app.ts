@@ -151,6 +151,26 @@ export async function buildApp(overrides: Partial<Config> = {}) {
     app.log.info({ seedUser: seedBootstrap.seedUser, uid: config.seedUser.uid, username: seedBootstrap.username },
       `seed user bootstrap: ${seedBootstrap.seedUser}`);
   }
+  // 默认好友的自检：DEFAULT_FRIEND_USERNAME 只在「别人注册」这条路径上被读取，
+  // 一旦它指向的账号不存在，故障要等到第一个新用户注册时才以 503 暴露，
+  // 而运维看启动日志时完全无感（历史事故：.env 缺失 → 整个功能静默关闭）。
+  // 因此启动时把「配置未启用 / 账号缺失 / 账号被禁用」三种状态显式打出来。
+  if (config.defaultFriendUsername) {
+    const friend = store.get<{ id: string; uid: number | null; status: string }>(
+      'SELECT id, uid, status FROM users WHERE username = ?', config.defaultFriendUsername);
+    if (!friend) {
+      app.log.warn({ defaultFriendUsername: config.defaultFriendUsername },
+        'default friend account NOT FOUND — user registration will fail with 503 DEFAULT_FRIEND_UNAVAILABLE');
+    } else if (friend.status !== 'active') {
+      app.log.warn({ defaultFriendUsername: config.defaultFriendUsername, uid: friend.uid, status: friend.status },
+        `default friend account is ${friend.status} — new users will be linked to a non-active account`);
+    } else {
+      app.log.info({ defaultFriendUsername: config.defaultFriendUsername, uid: friend.uid },
+        'default friend bootstrap: resolved');
+    }
+  } else {
+    app.log.info('default friend bootstrap: disabled (DEFAULT_FRIEND_USERNAME is empty)');
+  }
   app.decorateRequest('identity', null);
   app.setErrorHandler<FastifyError>((error, request, reply) => {
     const statusCode = error instanceof ApiError ? error.statusCode : error.statusCode ?? 500;

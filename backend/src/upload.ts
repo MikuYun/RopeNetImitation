@@ -48,6 +48,17 @@ export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
  */
 export const UPLOAD_BODY_LIMIT_VIDEO = MAX_VIDEO_BYTES + 1024 * 1024;
 
+/**
+ * 单张表情包的体积上限 2 MiB。
+ *
+ * 【为什么表情要单独卡上限】表情包是**长期**占用磁盘的收藏品：上传的原图会跟着
+ * 保留策略被清掉，但被收藏的 upload 因为 `stickers` 引用而永远保留（sweep 把
+ * stickers 算作在用引用）。等于每个用户可以永久占用「表情数量 × 原图体积」，
+ * 几十个人各存几张图就能把磁盘吃掉。前端收藏时会先压到 512px 的 WebP，
+ * 这里再做一次服务端兜底（客户端可以被绕过）。
+ */
+export const MAX_STICKER_BYTES = 2 * 1024 * 1024;
+
 interface Signature {
   mimeType: string;
   test: (bytes: Buffer) => boolean;

@@ -11,14 +11,26 @@
  *      浏览器 `<img src>` 无法自带 Authorization 头，所以图片一律走
  *      `fetchObjectUrl()`：axios 带 Bearer 取字节 → `URL.createObjectURL`
  *      → 交给 `<img>`。blob URL 是同源临时句柄，不含任何凭据。
- *   2. blob URL 是**显式资源**，用完必须 `URL.revokeObjectURL()`，否则每渲染
+ *   2. blob URL 是**显式资源**，用完必须 `revokeObjectUrl()`，否则每渲染
  *      一张图片就泄漏一份内存。本模块只负责生成，由调用方（AttachmentView）
  *      在 onUnmounted / 附件变化时释放。
  *
  * 复用 `http` 实例：Bearer 注入、401 续期、代际守卫全部由 http.ts 统一处理，
  * 不新建 axios 实例（否则那两处刚修好的竞态防线会绕过去）。
+ *
+ * 【本地缓存】附件字节不可变（upload id → 内容），所以 `fetchAttachmentBlob` /
+ * `fetchObjectUrl` 统一走 `@/utils/mediaCache` 的三层缓存（内存 LRU → IndexedDB
+ * → 网络）。组件反复挂载/卸载（虚拟列表滚动）时命中缓存，**不再重复请求**。
+ * `revokeObjectUrl` 变成缓存层的「释放一份引用」：幂等、只对 `blob:` 生效，
+ * 只摘掉内存里的 URL 关联，IndexedDB 里的字节保留，下次同 key 重新建 URL。
  */
 import { http } from './http'
+import {
+  evictCachedMedia,
+  getCachedBlob,
+  getCachedObjectUrl,
+  releaseCachedObjectUrl,
+} from '@/utils/mediaCache'
 import type { Attachment, AttachmentKind } from '@/types/domain'
 import type { WireAttachment } from './wire'
 
@@ -91,12 +103,12 @@ export async function uploadFile(file: File, options: UploadOptions = {}): Promi
 }
 
 /**
- * 取附件字节并转成 blob URL。
+ * 不经过缓存的原始拉取（唯一真正发网络请求的地方）。
  *
  * 必须用 `responseType: 'blob'`，否则 axios 会把二进制当文本解码，图片直接损坏。
  */
-export async function fetchAttachmentBlob(attachment: Pick<Attachment, 'id'>): Promise<Blob> {
-  const { data } = await http.get<Blob>(`/api/v1/uploads/${encodeURIComponent(attachment.id)}`, {
+async function requestAttachmentBlob(id: string): Promise<Blob> {
+  const { data } = await http.get<Blob>(`/api/v1/uploads/${encodeURIComponent(id)}`, {
     responseType: 'blob',
     timeout: 60_000,
   })
@@ -104,22 +116,47 @@ export async function fetchAttachmentBlob(attachment: Pick<Attachment, 'id'>): P
 }
 
 /**
- * 取附件 → blob URL。调用方负责 `revokeObjectUrl(url)`。
+ * 取附件字节（走本地缓存：内存 → IndexedDB → 网络）。
+ *
+ * 返回的 Blob 是共享的，调用方**不得**修改它；需要 objectURL 请用
+ * `fetchObjectUrl`，它复用缓存里的 URL，比自己 createObjectURL 更省。
+ */
+export async function fetchAttachmentBlob(attachment: Pick<Attachment, 'id'>): Promise<Blob> {
+  return getCachedBlob(attachment.id, () => requestAttachmentBlob(attachment.id))
+}
+
+/**
+ * 取附件 → blob URL（走本地缓存，命中时复用已有 URL，不新建）。
+ *
+ * 调用方负责 `revokeObjectUrl(url)`；同一 URL 可能被多个调用方共享，缓存层用
+ * 引用计数保证最后一个释放者才真正 revoke。
+ *
+ * 传了 `signal` 时，若等待期间被 abort，则以 AbortError 拒绝，并释放刚拿到的那份
+ * 引用（不会泄漏 objectURL）。abort 不会取消共享的网络请求 —— 那个结果正好留给
+ * 缓存和其他等待者。
  */
 export async function fetchObjectUrl(
   attachment: Pick<Attachment, 'id'>,
   signal?: AbortSignal,
 ): Promise<string> {
-  const blob = await fetchAttachmentBlob(attachment)
-  if (signal?.aborted) throw new DOMException('aborted', 'AbortError')
-  return URL.createObjectURL(blob)
+  const url = await getCachedObjectUrl(attachment.id, () => requestAttachmentBlob(attachment.id))
+  if (signal?.aborted) {
+    revokeObjectUrl(url)
+    throw new DOMException('aborted', 'AbortError')
+  }
+  return url
 }
 
-/** 释放 blob URL。传 null/空串是安全的（幂等），方便直接放进 onUnmounted。 */
+/**
+ * 释放 blob URL（幂等、只对 `blob:` 生效）。
+ *
+ * 与老的直接 `URL.revokeObjectURL` 的区别：同一附件可能被多个组件同时显示，
+ * 缓存层按引用计数延迟到最后一个释放者才真正 revoke；并且**不会**删除
+ * IndexedDB 里持久化的字节 —— 下次再显示只需重建 objectURL，0 网络请求。
+ * 传 null/空串是安全的，方便直接放进 onUnmounted。
+ */
 export function revokeObjectUrl(url: string | null | undefined): void {
-  if (!url) return
-  if (!url.startsWith('blob:')) return
-  URL.revokeObjectURL(url)
+  releaseCachedObjectUrl(url)
 }
 
 /**
@@ -145,7 +182,11 @@ export async function downloadAttachment(attachment: Attachment): Promise<void> 
   }
 }
 
-/** 删除附件（发送后不再引用时清理；服务端对已附着附件返回 409 UPLOAD_IN_USE）。 */
+/** 删除附件（发送后不再引用时清理；服务端对已附着附件返回 409 UPLOAD_IN_USE）。
+ *
+ * 成功后会丢弃本地缓存里的这份字节：服务端已不可达，再留着只会白占配额。
+ */
 export async function deleteUpload(id: string): Promise<void> {
   await http.delete(`/api/v1/uploads/${encodeURIComponent(id)}`)
+  evictCachedMedia(id)
 }

@@ -1,79 +1,79 @@
 
-=== UX2 P0 浏览器实证  BASE=http://localhost:5174  BACKEND=http://127.0.0.1:3098  RUN=ke3z1x ===
+=== UX2 P0 浏览器实证  BASE=http://localhost:5174  BACKEND=http://127.0.0.1:3098  RUN=4oqqvm ===
 
-临时文件：photo=49657B  note=619B  back=519B（C:\Users\31626\AppData\Local\Temp\aitr-ux2p0-4VmdoC）
+临时文件：photo=49657B  note=619B  back=519B（C:\Users\31626\AppData\Local\Temp\aitr-ux2p0-Qmo3c3）
 
-会话：AB=f6f9eb76-49df-4fff-b27c-ef7a90baab9b
+会话：AB=454a622f-3570-4095-84da-1179f27c941c
 好友：A↔B=ok  A↔C=true
 
-gate_a uid=10001（注册顺序第一位，期望 10001）
+gate_a uid=10002（注册顺序第一位，期望 10001）
 
-已播种 6 条长文本消息（前缀 长文ke3z1x）
+已播种 6 条长文本消息（前缀 长文4oqqvm）
 
-种子图片上传=201 id=3fff9e78-507a-4784-bd18-398b5c12f7a7
+种子图片上传=201 id=a144cd89-da73-430d-8fd5-d1d945bd7445 种子文件上传=201 id=53b42fa3-86ac-4ab2-94b7-2f99cd118ac0
 
 
 ──── P0-1 移动端（390x844 / 320x568）气泡工具条不遮挡正文 ────
-PASS  P0-1 390 .bubble__tools 该档不可见  —— DOM 中=7 不可见=7 仍可见=0 display=["none"]
-PASS  P0-1 390 气泡中心点命中正文（elementFromPoint）  —— 气泡数=7 采样点=31 被遮挡=0
-PASS  P0-1 390 .bubble__text 无横向溢出（字符未被挤出）  —— 正文块=6 溢出=0
+PASS  P0-1 390 .bubble__tools 该档不可见  —— DOM 中=8 不可见=8 仍可见=0 display=["none"]
+PASS  P0-1 390 气泡中心点命中正文（elementFromPoint）  —— 气泡数=8 采样点=40 被遮挡=0
+PASS  P0-1 390 .bubble__text 无横向溢出（字符未被挤出）  —— 正文块=8 溢出=0
 PASS  P0-1 390 正文未命中任何工具条/浮层元素  —— 命中 .bubble__tool* / .mask 次数=0
-PASS  P0-1 320 .bubble__tools 该档不可见  —— DOM 中=7 不可见=7 仍可见=0 display=["none"]
-PASS  P0-1 320 气泡中心点命中正文（elementFromPoint）  —— 气泡数=7 采样点=11 被遮挡=0
-PASS  P0-1 320 .bubble__text 无横向溢出（字符未被挤出）  —— 正文块=6 溢出=0
+PASS  P0-1 320 .bubble__tools 该档不可见  —— DOM 中=8 不可见=8 仍可见=0 display=["none"]
+PASS  P0-1 320 气泡中心点命中正文（elementFromPoint）  —— 气泡数=8 采样点=20 被遮挡=0
+PASS  P0-1 320 .bubble__text 无横向溢出（字符未被挤出）  —— 正文块=8 溢出=0
 PASS  P0-1 320 正文未命中任何工具条/浮层元素  —— 命中 .bubble__tool* / .mask 次数=0
 
 ──── P0-2 移动端长按（>500ms）弹出操作菜单；长按后滚动不误触 ────
 PASS  P0-2 长按后立即滑动不误触菜单  —— touchmove 后等 700ms 菜单可见=false
-PASS  P0-2 长按 750ms 弹出操作菜单  —— 菜单可见=true 标题="消息操作" 长按气泡="长文ke3z1x-1 这是一段用来验证移动端气泡不遮挡正文的长文本，包含 行内代"
+PASS  P0-2 长按 750ms 弹出操作菜单  —— 菜单可见=true 标题="消息操作" 长按气泡="长文4oqqvm-1 这是一段用来验证移动端气泡不遮挡正文的长文本，包含 行内代"
 PASS  P0-2 菜单标题为「消息操作」  —— 标题="消息操作"
-PASS  P0-2 菜单含「复制正文」与「看 Markdown 源码」  —— 菜单项=["复制正文","看 Markdown 源码","置顶消息","取消"]
-PASS  P0-2 菜单含「置顶消息」（置顶可用）  —— 菜单项=["复制正文","看 Markdown 源码","置顶消息","取消"]
-PASS  P0-2 附件消息长按菜单含「下载附件」  —— 菜单可见=true 菜单项=["置顶消息","下载附件","取消"]
+PASS  P0-2 菜单含「复制正文」与「看 Markdown 源码」  —— 菜单项=["复制正文","选择文本","回复","看 Markdown 源码","置顶消息","取消"]
+PASS  P0-2 菜单含「置顶消息」（置顶可用）  —— 菜单项=["复制正文","选择文本","回复","看 Markdown 源码","置顶消息","取消"]
+PASS  P0-2 附件消息长按菜单含「下载附件」  —— 菜单可见=true 菜单项=["复制正文","选择文本","回复","置顶消息","下载附件","取消"]
 
 ──── P0-3 桌面（1440x900）工具条位于气泡外侧、与气泡不重叠 ────
 PASS  P0-3 桌面可 hover 到气泡  —— hovered=true geo.ok=true
-PASS  P0-3 工具条与气泡矩形不重叠  —— bubble=[408,130,840,232] tools=[846,202,928,232] 重叠=false
+PASS  P0-3 工具条与气泡矩形不重叠  —— bubble=[408,597,708,698] tools=[714,668,796,698] 重叠=false
 PASS  P0-3 hover 时工具条可见（opacity=1、非 display:none）  —— opacity=1 display=flex
-PASS  P0-3 工具条位于气泡水平外侧  —— bubble.l=408 bubble.r=840 tools.l=846 tools.r=928
+PASS  P0-3 工具条位于气泡水平外侧  —— bubble.l=408 bubble.r=708 tools.l=714 tools.r=796
 
 ──── P0-4 附件跨用户可看可下载（图片渲染 + 灯箱 + 下载字节 sha256 一致，双向） ────
-PASS  P0-4 A 侧图片消息已出现在气泡中  —— 缩略图待发区=true（文件名="ux2-photo-ke3z1x.png"）气泡出现=true
+PASS  P0-4 A 侧图片消息已出现在气泡中  —— 缩略图待发区=true（文件名="ux2-photo-4oqqvm.png"）气泡出现=true
 PASS  P0-4 P0 修复：B 侧（非属主）图片渲染 naturalWidth>0  —— 气泡出现=true 找到img=true naturalWidth=180
 PASS  P0-4 B 侧点开灯箱大图 naturalWidth>0（未降级为文件卡片）  —— 灯箱打开=true 大图 naturalWidth=180 Esc 关闭=true
 PASS  P0-4 B 侧收到 A 的 txt 文件卡片  —— 待发区就绪=true 气泡出现=true
-PASS  P0-4 P0 修复：B 侧下载 A 的 txt，字节 sha256 与源文件一致  —— 下载=true 大小=619B/619B sha256=3e6272b9f42d1742… 期望=3e6272b9f42d1742…
-PASS  P0-4 反向：A 侧下载 B 的 txt，字节 sha256 与源文件一致  —— 收到=true 下载=true 大小=519B/519B sha256=50d6286bd4cf3b30… 期望=50d6286bd4cf3b30…
+PASS  P0-4 P0 修复：B 侧下载 A 的 txt，字节 sha256 与源文件一致  —— 下载=true 大小=619B/619B sha256=5e795668e103fade… 期望=5e795668e103fade…
+PASS  P0-4 反向：A 侧下载 B 的 txt，字节 sha256 与源文件一致  —— 收到=true 下载=true 大小=519B/519B sha256=b646300c2396e2d3… 期望=b646300c2396e2d3…
 
 ──── P0-5 图片 / 文件双入口 + 图片一律 .att--image（不出现 .att--file） ────
 PASS  P0-5 图片 / 文件是两个独立按钮  —— imageBtn=true fileBtn=true 同一节点=false
 PASS  P0-5 两个入口 aria-label 分别为「发送图片」「发送文件」  —— 图片入口="发送图片" 文件入口="发送文件"
-PASS  P0-5 图片入口 input.accept 只含图片 MIME  —— input 数=2 accept="image/png,image/jpeg,image/webp,image/gif" 全为图片 MIME=true
+PASS  P0-5 图片入口打开的 input.accept 只含图片 MIME  —— filechooser=true input 数=1 accept="image/*"
 PASS  P0-5 文件入口 input 不限制 accept  —— 存在无 accept 的 input=true
 PASS  P0-5 图片消息一律渲染为 .att--image（无 .att--file）  —— 找到气泡=true .att--image=1 .att--file=0 .att__thumb=1 skeleton=0
-PASS  P0-5 种子图片消息（服务端侧发送）同样是 .att--image  —— 文件名 ux2-seed-ke3z1x.png 在 B 侧渲染为缩略图
+PASS  P0-5 种子图片消息（服务端侧发送）同样是 .att--image  —— 文件名 ux2-seed-4oqqvm.png 在 B 侧渲染为缩略图
 
 ──── P0-6 置顶联动：A 置顶 → B 不刷新收到 conversation.pins → 置顶条出现 → 跳转 → 取消后消失 ────
 PASS  P0-6 A 侧置顶后置顶条出现  —— .pane__pins 可见=true
 PASS  P0-6 B 侧未刷新即收到 conversation.pins，置顶条出现  —— 置顶前 .pane__pins=0 置顶后可见=true URL 未变=true
-PASS  P0-6 B 侧置顶条文案即被置顶消息内容  —— 置顶条文案="长文ke3z1x-5 第五段普通文本，用于桌面 hover 工具条的外侧位置断言。长文ke3z1x-5 第五段普通文本，" 期望含「长文ke3z1x-5」
+PASS  P0-6 B 侧置顶条文案即被置顶消息内容  —— 置顶条文案="长文4oqqvm-5 第五段普通文本，用于桌面 hover 工具条的外侧位置断言。长文4oqqvm-5 第五段普通文本，" 期望含「长文4oqqvm-5」
 PASS  P0-6 点置顶条标题可展开置顶列表  —— 展开后 .pane__pins-list 可见=true
 PASS  P0-6 点置顶条跳转到该消息（高亮 + 进入视口）  —— 高亮=true 在视口内=true
 PASS  P0-6 取消置顶后 B 侧置顶条消失  —— B 侧 .pane__pins 已消失=true
 
 ──── P0-7 群角色：owner 设 admin → 成员侧见管理员徽标；admin 踢 owner/admin 403；owner 踢 admin 200 ────
-PASS  P0-7 前置：群聊创建/复用成功  —— status=201 groupId=9fecb954-6e0f-4987-a2ab-067eb76ad9b3
+PASS  P0-7 前置：群聊创建/复用成功  —— status=201 groupId=325c7dfe-f78a-4ca4-b9e2-170e39940977
 PASS  P0-7 owner 把 gate_b 设为 admin（200）  —— status=200 code=-
-PASS  P0-7 成员侧群信息页看到「管理员」徽标  —— 成员列表=[{"name":"闸门 A 群主","role":"owner","badge":"群主"},{"name":"闸门 B （我）管理员","role":"admin","badge":"管理员"},{"name":"闸门 C 成员","role":"member","badge":"成员"}]
+PASS  P0-7 成员侧群信息页看到「管理员」徽标  —— 成员列表=[{"name":"闸门 B （我）管理员","role":"admin","badge":"管理员"},{"name":"闸门 C 成员","role":"member","badge":"成员"},{"name":"闸门 A 群主","role":"owner","badge":"群主"}]
 PASS  P0-7 admin 也看得到改群名入口（canManage）  —— .info__edit 数量=1
 PASS  P0-7 前置：owner 把 gate_c 也设为 admin（200）  —— status=200
-PASS  P0-7 admin 踢 owner 被拒（403 OWNER_REQUIRED）  —— target=gate_a(3aae3244-a96f-4081-9cf4-62253b62aeba) status=403 code=OWNER_REQUIRED msg=管理员只能移除普通成员
+PASS  P0-7 admin 踢 owner 被拒（403 OWNER_REQUIRED）  —— target=gate_a(e496c647-f6bc-4115-a5b5-2605a9080814) status=403 code=OWNER_REQUIRED msg=管理员只能移除普通成员
 PASS  P0-7 admin 踢另一位 admin 被拒（403 OWNER_REQUIRED）  —— status=403 code=OWNER_REQUIRED msg=管理员只能移除普通成员
 PASS  P0-7 owner 踢 admin 成功（200）  —— status=200 body={"ok":true}
 PASS  P0-7 被 owner 移除后成员列表不再含 gate_c  —— 仍含=false
 
 ──── P0-8 UID 登录：登录页用数字 UID（非账号名）真实登录 ────
-PASS  P0-8 前置：gate_a 的 uid 为 10001（注册顺序第一位）  —— uid=10001
+PASS  P0-8 前置：gate_a 已分配到系统 UID（≥10001）  —— uid=10002
 PASS  P0-8 登录页提示支持「账号名或 UID」  —— 副标题="使用你的账号名或 UID（如 10001）继续"
 PASS  P0-8 首个输入框标签为「账号名或 UID」  —— label="账号名或 UID"
 PASS  P0-8 用 UID 登录成功并进入 /chat  —— URL=http://localhost:5174/chat 顶栏身份="闸门 A"

@@ -1125,12 +1125,21 @@ defineExpose({ stopTyping })
   color: var(--app-text-faint);
   white-space: nowrap;
 }
+/*
+ * 待发送缩略图也按原图比例（v2.6）。
+ *
+ * 旧实现是固定 40×40 + cover：选一张竖长的手机截图和选一张正方形图标，看到的都是
+ * 同一个方块，而且竖图两侧被裁掉。现在固定高度、宽度跟着原图比例走，只夹一个
+ * 上限（横图不至于把整行撑满），`object-fit: contain` 保证不裁不糊。
+ */
 .composer__att-thumb {
   flex: 0 0 auto;
-  width: 40px;
+  width: auto;
   height: 40px;
+  max-width: 96px;
+  min-width: 24px;
   border-radius: 5px;
-  object-fit: cover;
+  object-fit: contain;
   background: var(--app-active);
   border: 1px solid var(--app-border);
 }

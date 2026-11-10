@@ -1,0 +1,132 @@
+
+=== v2.4 表情包 / 右键菜单验收  BASE=http://localhost:5173  BACKEND=http://127.0.0.1:3099  RUN=4ol2cx ===
+
+
+──── 0. 环境前置 ────
+PASS  前端 dev server 可用（http://localhost:5173）  —— status=200
+PASS  隔离后端可用（http://127.0.0.1:3099/health）  —— status=200
+临时素材：C:\Users\31626\AppData\Local\Temp\aitr-v24-rxSgCs
+会话 AB=a57f7e34-62f6-4563-b765-e36c1dbea52d；清理表情包：gate_a 0/0，gate_b 0/0
+
+
+──── A. 表情包 API 语义 ────
+PASS  gate_a 上传 PNG 作为素材（未收藏前）  —— status=201 kind=image id=90d0d846-3d05-425a-96a3-975d62fb3bf5
+PASS  素材 PNG 的 kind 推导为 image  —— kind=image
+PASS  对照组：普通附件首次发送成功  —— status=201 seq=212
+PASS  对照组：普通附件第二次发送被 409 UPLOAD_IN_USE 拒绝  —— status=409 code=UPLOAD_IN_USE
+PASS  前置：PNG 作为纯图片消息发给 gate_b  —— status=201 attachments=1
+PASS  POST /stickers 首次收藏返回 201 并回传 Sticker  —— status=201 id=ba239b65-3f91-4a08-a11c-0992dd579154 url=/api/v1/uploads/90d0d846-3d05-425a-96a3-975d62fb3bf5
+PASS  POST /stickers 同 uploadId 再收藏幂等（200 + 同一 id）  —— status=200 id=ba239b65-3f91-4a08-a11c-0992dd579154 期望=ba239b65-3f91-4a08-a11c-0992dd579154
+PASS  GET /stickers 列表包含刚收藏的表情  —— status=200 count=1 nextOffset=null
+PASS  已收藏的表情包 uploadId 可反复发送（连续两次都不 409）  —— status1=201 status2=201 code2=-
+PASS  POST /stickers 不存在的 uploadId → 400 INVALID_STICKER  —— status=400 code=INVALID_STICKER
+PASS  POST /stickers 非图片上传（kind=file）→ 400 INVALID_STICKER  —— upload=201 kind=file status=400 code=INVALID_STICKER
+PASS  DEL. /stickers/:id 非属主删除被拒（403/404）  —— status=403 code=FORBIDDEN
+PASS  前置：发一条文本消息供右键菜单用  —— status=201
+
+──── B. 存为表情：桌面 hover 图片气泡 → 工具条 → 点击 ────
+PASS  gate_a 登录后进入聊天外壳  —— shell=true
+PASS  打开 gate_a ↔ gate_b 单聊并渲染消息区  —— pane__scroll=true
+PASS  消息列表里能找到本次的图片消息行  —— 找到=true 附件名=v24-sticker-4ol2cx.png
+PASS  hover 图片气泡后悬浮工具条显示（opacity 1）  —— opacity=1
+PASS  图片消息工具条中有「存为表情」按钮  —— 按钮数=1
+PASS  「存为表情」按钮可见可点  —— visible=true
+PASS  点击「存为表情」出现成功提示「已保存到表情包」  —— toast=["已保存到表情包","已保存到表情包"]
+
+──── C. 表情面板渲染与发送 ────
+PASS  工具条存在「表情包」按钮  —— count=1
+PASS  点击后出现 section.sp[aria-label="表情包"]  —— 可见=true
+PASS  打开后工具条按钮 aria-label 变「收起表情包」  —— aria-label="收起表情包"
+PASS  面板格子数 ≥ 1  —— cell=1
+PASS  表情格子渲染成真实 <img> 且 naturalWidth > 0  —— 自然尺寸=240x- src=blob:http://localhost:51… 占位符=0
+PASS  表情图片走 blob: URL（受鉴权保护，不是裸接口地址）  —— src 前缀=blob:http://
+   截图：B:\AITrance\docs\evidence\v24-sticker-panel.png
+PASS  点 .sp__pick 直接发送：消息行 +1  —— 前=30 后=31
+PASS  发送只插入一条（无重复插入）  —— 稳定后=31 期望=31
+PASS  本次发送没有「发送失败」toast（未触发 UPLOAD_IN_USE）  —— toast=["已保存到表情包","已保存到表情包"]
+PASS  同一表情再点一次仍能发送（可反复发送的核心断言）  —— 前=31 后=32
+PASS  反复发送未出现 409 冲突提示  —— toast=["已保存到表情包","已保存到表情包"]
+PASS  新发送的那条是图片消息（.att--image）  —— 最后一行图片=true
+
+──── D. 刷新后表情仍在（持久化） ────
+PASS  刷新页面后表情包仍在（格子数 ≥ 1）  —— 工具栏=true 面板=true cell=1
+PASS  面板计数角标与实际格子数一致  —— 角标="1" cell=1
+
+──── E. 删除表情：二次确认 → cell 消失 → 刷新仍不存在 ────
+PASS  hover 表情格子后「删除」按钮可见  —— visible=true
+PASS  点删除弹出二次确认（标题「删除表情」）  —— 可见=true 标题="删除表情"
+PASS  确认弹窗说明了删除后果（「删除后需要重新从图片消息保存」）  —— 正文="确定删除「v24-sticker-4ol2cx.png」吗？删除后需要重新从图片消息保存。"
+PASS  点「取消」关闭弹窗且表情未被删除  —— 弹窗关闭=true cell=1
+PASS  点「删除」后该 cell 消失  —— 删除前=1 删除后=0
+PASS  刷新后确认表情已删除（cell=0 + 空态文案）  —— cell=0 空态="还没有表情包，右键（手机长按）图片消息可保存"
+PASS  后端 GET /stickers 列表已为空（不是只删了前端态）  —— status=200 count=0
+
+──── F. 关闭面板 ────
+PASS  点 .sp__close 关闭面板且按钮回到「表情包」  —— 面板消失=true aria-label="表情包"
+PASS  再点工具条按钮也能收起面板（toggle）  —— 再次打开=true 点后收起=true
+
+──── G. 右键菜单：空白区默认项 ────
+PASS  在聊天区空白处右键弹出 .ctx-menu  —— items=["refresh","copy-link","top","theme"]
+PASS  默认菜单含 refresh / copy-link / theme  —— items=["refresh","copy-link","top","theme"]
+PASS  「回到顶部」在滚动到底部时按条件禁用（禁用项带 aria-disabled + .is-disabled）  —— top={"disabled":false,"hasClass":false}
+PASS  菜单项是 role=menuitem 的按钮且文案非空  —— items=[{"id":"refresh","label":"刷新页面","role":"menuitem"},{"id":"copy-link","label":"复制页面链接","role":"menuitem"},{"id":"top","label":"回到顶部","role":"menuitem"},{"id":"theme","label":"切换深浅色","role":"menuitem"}]
+   截图：B:\AITrance\docs\evidence\v24-ctx-menu-default.png
+
+──── H. 键盘可达：Escape 关闭菜单 ────
+PASS  菜单打开后焦点移入菜单（键盘可操作）  —— 焦点在菜单内=true
+PASS  按 Escape 关闭菜单  —— 已关闭=true
+
+──── I. 输入框 / Shift 右键保留原生菜单 ────
+PASS  在 textarea 上右键不弹 AppContextMenu（保留原生）  —— 出现了=false
+
+──── J. 消息气泡右键菜单 ────
+PASS  找到本次的文本消息行  —— 找到=true
+PASS  消息气泡上右键弹出菜单  —— 可见=true
+PASS  消息菜单含 copy / select-text / reply 中至少一项（本例应三项齐全）  —— items=["copy","select-text","reply","toggle-pin","recall"]
+PASS  文本消息的菜单同时含 copy 与 select-text 与 reply  —— items=["copy","select-text","reply","toggle-pin","recall"]
+PASS  消息菜单不再混入项目级默认项（无 refresh / theme）  —— items=["copy","select-text","reply","toggle-pin","recall"]
+   截图：B:\AITrance\docs\evidence\v24-ctx-menu-message.png
+PASS  点菜单项「复制正文」后菜单关闭  —— 已关闭=true
+SKIP  复制正文落到剪贴板  —— headless Chrome 未授予 clipboard-read 权限，读回值=""，无失败 toast（说明写入路径未报错），但无法在进程外验证剪贴板内容。错误=page.evaluate: NotAllowedError: Failed to execute 'readText' on 'Clipboard': Read permission denied.
+
+──── K. 图片附件右键菜单 ────
+PASS  页面上存在图片附件节点 .att--image  —— count=12
+PASS  拿到图片附件的位置（前置）  —— bbox={"x":1022,"y":438,"width":240,"height":160}
+PASS  图片附件上右键弹出菜单  —— 可见=true
+PASS  图片附件菜单含 save-media 与 copy-media-url  —— items=["save-media","copy-media-url","open-preview"]
+PASS  图片菜单文案是「保存图片 / 复制图片地址」且未禁用（blob 已就绪）  —— items=[{"id":"save-media","label":"保存图片","disabled":false},{"id":"copy-media-url","label":"复制图片地址","disabled":false},{"id":"open-preview","label":"查看大图","disabled":false}]
+
+──── L. 点击页面其它位置关闭菜单 ────
+PASS  重新打开菜单（前置）  —— items=["refresh","copy-link","top","theme"]
+PASS  菜单打开时点击页面其它位置 → 菜单关闭  —— 点击前可见=true 点击后消失=true
+
+──── M. 默认菜单「切换深浅色」生效 ────
+PASS  再次打开默认菜单（前置）  —— items=["refresh","copy-link","top","theme"]
+PASS  点「切换深浅色」后 data-theme-mode 变化  —— light → dark
+PASS  点主题菜单项后菜单关闭  —— 已关闭=true
+
+──── N. Shift + 右键保留浏览器原生菜单 ────
+PASS  N 前置：菜单已全部关闭  —— cleaned=true
+PASS  N 前置：找到 .pane__scroll 的空白点  —— point={"x":814,"y":163}
+PASS  Shift + 右键在空白区不弹 AppContextMenu（放行浏览器原生菜单）  —— 出现了=false
+
+──── O. 面板空态（gate_b 无收藏） ────
+PASS  gate_b 登录后进入聊天外壳  —— shell=true
+PASS  gate_b 的工具条也有「表情包」按钮  —— visible=true
+PASS  无收藏账号打开面板显示空态「还没有表情包」  —— 面板=true 空态="还没有表情包，右键（手机长按）图片消息可保存"
+PASS  空态下不渲染任何格子  —— cell=0
+PASS  空态下面板同样能关闭  —— 已关闭=true
+
+════════ 汇总 ════════
+=== 汇总：77 项 —— 通过 76，失败 0，待验 1 ===
+
+待验清单（headless 客观限制，附原因）：
+  SKIP  复制正文落到剪贴板  —— headless Chrome 未授予 clipboard-read 权限，读回值=""，无失败 toast（说明写入路径未报错），但无法在进程外验证剪贴板内容。错误=page.evaluate: NotAllowedError: Failed to execute 'readText' on 'Clipboard': Read permission denied.
+
+截图目录：B:\AITrance\docs\evidence
+   - v24-sticker-panel.png
+   - v24-ctx-menu-default.png
+   - v24-ctx-menu-message.png
+
+
+EXIT=0

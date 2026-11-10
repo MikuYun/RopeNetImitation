@@ -1,5 +1,5 @@
-启动后端 3098 pid=20944 db=C:\Users\31626\AppData\Local\Temp\ux2-p0\chat.sqlite
-启动前端 5174 pid=31108
+启动后端 3098 pid=11472 db=C:\Users\31626\AppData\Local\Temp\ux2-p0\chat.sqlite
+启动前端 5174 pid=33868
 自检 1 VITE_USE_MOCK=false ... 通过
 自检 2 GET /api/v1/health via 5174 proxy = 200
 自检 3 管理员 1001 登录 = 200

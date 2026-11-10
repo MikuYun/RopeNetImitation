@@ -612,19 +612,23 @@ async function main() {
         `natural=${thumbState.w}x${thumbState.h} src=${thumbState.src}…`,
       )
       check(
-        '图片消息气泡内显示「文件名 · 大小」',
+        '图片消息气泡不再显示「文件名 · 大小」（v2.5：图片只有图，下载走右键菜单）',
         await pageA.evaluate(
           ([n, s]) => {
+            // v2.5 把文件名降级成 .sr-only（气泡 textContent 仍含，供 e2e 定位消息），
+            // 所以除了断言旧图注消失，还要断言可见文本里没有大小文案。
             const bubble = [...document.querySelectorAll('.bubble--attach')].find((b) =>
               (b.textContent || '').includes(n),
             )
             if (!bubble) return false
-            const a2 = bubble.querySelector('.att__name--under')
-            return !!a2 && a2.textContent.includes(n) && a2.textContent.includes(s)
+            if (bubble.querySelector('.att__name--under')) return false
+            if ((bubble.textContent || '').includes(s)) return false
+            const sr = bubble.querySelector('.att--image .sr-only')
+            return !!sr && sr.textContent.trim() === n
           },
           [photoName, formatBytes(photoBuf.length)],
         ),
-        `${photoName} · ${formatBytes(photoBuf.length)}`,
+        `${photoName}（无可见文件名/大小，仅 sr-only）`,
       )
       await shot(pageA, '02-image-bubble')
       await stopComposerObserver(pageA)
@@ -749,24 +753,43 @@ async function main() {
       const upload403 = bBadResponses.filter(
         (r) => r.status === 403 && r.path.startsWith('/api/v1/uploads/'),
       )
-      const bView = await pageB.evaluate((n) => {
+      const readBView = () =>
+        pageB.evaluate((n) => {
+          const rows = [...document.querySelectorAll('.pane__row')]
+          const row = rows.find((r) => (r.textContent || '').includes(n))
+          if (!row) return { found: false }
+          const img = row.querySelector('.att--image img.att__thumb')
+          return {
+            found: true,
+            asFile: !!row.querySelector('.att.att--file'),
+            asImage: !!row.querySelector('.att.att--image'),
+            // v2.5：图片消息不再渲染可见文件名/大小，只有 sr-only 承载名（供读屏与定位）
+            visibleName: row.querySelector('.att__name')?.textContent?.trim() ?? '',
+            srName: row.querySelector('.att--image .sr-only')?.textContent?.trim() ?? '',
+            naturalW: img ? img.naturalWidth : 0,
+            skeleton: !!row.querySelector('.att__thumb-skeleton'),
+          }
+        }, thumbName)
+      // v2.6 起缩略图改为 IntersectionObserver 视口懒加载 + 骨架屏兜底，
+      // 消息刚到达时 .att__thumb-skeleton 仍在、img.naturalWidth 还是 0。
+      // 真实用户在 B 侧要「滚到那条消息」才会看到图，所以这里也照做：把目标行
+      // 滚进视口，让懒加载观察器有真正的滚动事件可收（否则整条断言的成立与否
+      // 取决于新消息落屏时的布局抖动，会随机 PASS/FAIL）。
+      await pageB.evaluate((n) => {
         const rows = [...document.querySelectorAll('.pane__row')]
         const row = rows.find((r) => (r.textContent || '').includes(n))
-        if (!row) return { found: false }
-        const img = row.querySelector('.att--image img.att__thumb')
-        return {
-          found: true,
-          asFile: !!row.querySelector('.att.att--file'),
-          asImage: !!row.querySelector('.att.att--image'),
-          name: row.querySelector('.att__name')?.textContent?.trim() ?? '',
-          naturalW: img ? img.naturalWidth : 0,
-          skeleton: !!row.querySelector('.att__thumb-skeleton'),
-        }
+        row?.scrollIntoView({ block: 'center', behavior: 'instant' })
       }, thumbName)
+      await sleep(300)
+      const bImageReady = await until(async () => {
+        const v = await readBView()
+        return !!v.found && !!v.asImage && !v.asFile && !v.skeleton && (v.naturalW ?? 0) > 0
+      }, 15_000, 200)
+      const bView = await readBView()
       checkProduct(
-        'B 侧能看到 A 图片的附件条目（文件名 + 大小可读）',
-        bView.found && !!bView.name,
-        `found=${bView.found} name=${bView.name}`,
+        'B 侧能看到 A 图片的附件条目（图可读，无可见文件名/大小）',
+        bView.found && bView.asImage && !bView.visibleName && bView.srName === thumbName,
+        `found=${bView.found} visibleName="${bView.visibleName}" srName=${bView.srName}`,
       )
       check(
         'P0 跨用户可见：同会话成员取 A 的图片不返回 403（readUpload 共享放行）',
@@ -775,7 +798,7 @@ async function main() {
       )
       check(
         'P0 跨用户可见：B 侧图片渲染为 .att--image 且 naturalWidth>0（未降级为文件卡片）',
-        bView.asImage && !bView.asFile && bView.naturalW > 0 && !bView.skeleton,
+        bImageReady,
         `asImage=${bView.asImage} asFile=${bView.asFile} naturalW=${bView.naturalW} skeleton=${bView.skeleton}`,
       )
     }
@@ -826,8 +849,8 @@ async function main() {
       }, noteName)
       const expectSize = formatBytes(noteBuf.length)
       check(
-        '文件卡片显示文件名与「人类可读大小 · 点击下载」',
-        !!cardInfo && cardInfo.name === noteName && cardInfo.meta === `${expectSize} · 点击下载`,
+        '文件卡片显示文件名与人类可读大小（v2.5 去掉「点击下载」文案，下载靠点击卡片）',
+        !!cardInfo && cardInfo.name === noteName && cardInfo.meta === expectSize,
         cardInfo ? `name=${cardInfo.name} meta=${cardInfo.meta}` : '卡片不存在',
       )
       check(

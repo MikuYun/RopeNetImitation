@@ -46,6 +46,7 @@ const BUSINESS_TABLES = [
   'conversations',
   'friend_requests',
   'friendships',
+  'stickers',
   'sessions',
   'uploads',
   'users',

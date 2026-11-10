@@ -38,6 +38,13 @@
   「详细资料」「主题」「退出登录（二次确认）」三个入口。
 - 移动端：`MobileNav` 第三位由「更多」改为「个人信息」，点击弹底部上拉抽屉（`brief`）；
   抽屉顶部有拖拽把手，向上拖过 88vh 后切换为 `full` 态，渲染详细资料内容（复用 ProfileView 的内容块）。
+- **桌面抽屉动画（v2.6）**：`translateX(calc(-100% - var(--pdrawer-left)))` → `0`，入场 300ms
+  `cubic-bezier(0.22,0.61,0.36,1)`、离场 180ms `cubic-bezier(0.4,0,1,1)`，只过渡 `transform`/`opacity`。
+  `<Transition>` 必须显式给 `:duration="{ enter: 300, leave: 180 }"` —— 否则 Vue 只取根节点（遮罩）
+  的 opacity 200ms，会在 200ms 强行结束 300ms 的面板滑入（滑到 -33% 就跳回原位）。
+  位移要带上 `--pdrawer-left`（面板 left 在 rail 右缘，纯 -100% 会留一截压在侧栏上）；
+  遮罩离场保持 `opacity: 1` 且不过渡，否则面板的滑出会跟着遮罩一起被淡没。
+  `prefers-reduced-motion` 下全部关掉。
 - 「退出登录」必须二次确认（`AppModal`），并清空 auth/ui store。
 
 ## 4. 广场入口（Lead + fe-account）
@@ -49,7 +56,26 @@
 ## 5. 消息渲染（fe-msg）
 
 - `Message.attachments: Attachment[]`（**单数 `attachment` 已删除**）。空数组 = 无附件。
-- 附件九宫格：1 张时大图（最大 260px），2–4 张两列，5–9 张三列；视频用 `<video controls preload="metadata">`。
+- 附件九宫格：**v2.6 起按原图比例弹性布局**，不再固定尺寸。
+  - 1 张图：只限最大宽/高 `min(320px,62vw) × min(400px,46vh)`、`object-fit: contain`（旧实现是
+    260×260 + `cover`，结果 40×40 的图标被放大到 260 变模糊、1200×300 的横图被裁掉大半）。
+  - 2–4 张两列，5–9 张三列；**每格 `aspect-ratio` 取该图真实比例**（`--att-ratio`，由
+    `<img @load>` 读 `naturalWidth/naturalHeight` 写入，夹在 0.5~2，`Attachment` 本身没有宽高字段，
+    只能靠图片自身尺寸），未加载时退回 1:1 占位。
+  - 视频用 `<video controls preload="metadata">`，单视频 ≤`min(320px,66vw)`。
+- **视口懒加载（v2.6）**：`AttachmentView` 用 `IntersectionObserver`（`rootMargin: 400px`）等容器
+  进入「视口 + 一屏 1/3」才批量取字节，离开/销毁时 disconnect。旧实现 `watch(immediate)` 会在
+  v-for 创建节点的瞬间把所有图片请求一起打出去 —— `content-visibility` 只省布局不省 fetch，
+  必须在取字节这一步拦。无 `IntersectionObserver` 时降级为立即加载（宁可多拉也不能不显示）。
+- **v2.5 媒体消息去噪**：图片/视频消息**不显示文件名、大小、下载链接文字**（原 `.att__name--under`
+  图注与 `.att__video-bar` 视频文件名条已删除），下载改由用户主动操作：桌面右键 `save-media`
+  「保存图片/视频」，移动端长按同一菜单。文件名降级为 `.sr-only` 保留（读屏 + e2e 用气泡
+  `textContent` 含文件名定位消息）；文件卡仍显示文件名与大小、点击即下载（`.att__meta` 不再带
+  「· 点击下载」文案，因为卡片本身就是下载按钮）。
+- **纯媒体气泡**：只有附件、无正文、无引用回复的消息额外挂 `.bubble--media`
+  （`padding:0; background:transparent; box-shadow:none`），避免图片外围出现一圈底色/阴影「边框」。
+  `.bubble--attach` 类名保留（e2e 定位带附件消息依赖它）。
+- 视频时长不再单独渲染文本，改由原生 `controls` 展示（原先的 `.att__duration` 已删除）。
 - 视频/图片 URL 必须经 `fetchObjectUrl` 拿 blob URL（同 `api/uploads.ts` 既有纪律），不得把 token 拼进 URL。
 - 撤回：`recalled=true` 时渲染「XXX 撤回了一条消息」占位，不渲染正文与附件。
 - 引用回复：`replyTo` 非空时气泡顶部渲染引用条（`senderName：preview`，点击滚动定位到原消息）。
@@ -60,10 +86,20 @@
 - 新增接口层 `frontend/src/api/stickers.ts`：`Sticker`、`normalizeSticker()`、`isStickerMime()`、
   **`stickerToAttachment(sticker): Attachment`（id 取 `uploadId`）**、`listStickers` / `addSticker` / `deleteSticker`。
 - `frontend/src/stores/sticker.ts`：epoch 代际保护（不依赖 `auth.ts` 挂 reset），对外
-  `ensureLoaded(force)` / `refresh()` / `add(uploadId)` / `remove(id)` / `resetFor(userId)` / `hasUpload()` / `findById()`。
+  `ensureLoaded(force)` / `refresh()` / `add(uploadId)` / `saveFromAttachment(att)` / `remove(id)` /
+  `resetFor(userId)` / `hasUpload()` / `findById()`。
+- **收藏时压缩（v2.5）**：`saveFromAttachment()` 先取原图 blob → `utils/imageCompress.ts`
+  缩到最大边 512px、`canvas.toBlob('image/webp', 0.82)` → 重新上传 → 把压缩图收藏成表情。
+  静图 >64 KiB 才压（小图压缩收益不足以抵消多一条 uploads 记录）；转码后必须比原图小
+  20% 以上才采用，否则引用原图更省。GIF 不转码（canvas 只取首帧会丢动画），按原字节引用并受
+  2 MiB 上限约束。任何一步失败都回退成「收藏原图」，绝不阻断收藏；前端无法压缩且原图超限时
+  抛错提示用户裁剪。压缩逻辑与后端 `MAX_STICKER_BYTES` 双保险（客户端可绕过，服务端必须自挡）。
 - 面板 `components/message/StickerPanel.vue`（`section.sp[aria-label="表情包"]`）：桌面 4 列 / ≤767px 5 列，
   每格 1:1 `object-fit: contain`、≤360×320；每格删除按钮 `aria-label="删除表情 <name>"`（AppModal 二次确认）；
   图片一律走 blob URL（按 `uploadId` 缓存 + `onUnmounted` 全 revoke），**不得直接塞 `<img src>`**。
+  **v2.6 修掉格子不方/图片变形**：方形必须挂在**格子**上（`.sp__cell { aspect-ratio: 1/1; overflow: hidden }`）
+  + `.sp__pick { position: absolute; inset: 0 }`；旧写法把 `aspect-ratio` 挂在内容撑高的 `.sp__pick` 上，
+  `img { height: 100% }` 又找不到确定高度的包含块，结果格子高度随图变、图片被拉长。
 - 工具条 `ComposerToolbar.vue` 新增 `.cbar__btn--sticker`（`aria-label` 在「表情包」/「收起表情包」间切换，
   `aria-expanded`、手机 44×44），emit **`toggleStickers`**（开/关语义）。
 - 点表情 → `emit('send', {content:'', attachments:[stickerToAttachment(s)], replyToMsgId:null})`，
@@ -83,7 +119,21 @@
   `e.shiftKey` 放行原生 → `shouldKeepNativeMenu(target)` 对 input/textarea/select/contenteditable 放行原生 →
   否则 `preventDefault` + 弹默认菜单（`refresh` / `copy-link` / `top` / `theme`）。
 - 子组件自行接管：消息气泡（`copy` / `select-text` / `reply` / `toggle-source` / `toggle-pin` /
-  `download-attachment` / `save-sticker` / `recall`）、图片附件（`save-media` / `copy-media-url`）。
+  `download-attachment` / `save-sticker` / `recall`）、图片附件（`save-media` / `copy-media-url` /
+  `open-preview`）、灯箱（`zoom-in` / `zoom-out` / `zoom-reset` + 上面三项图片菜单）。
+- **图片专属菜单（v2.6）**：缩略图右键 = 「保存图片 / 复制图片地址 / 查看大图」三项，视频只有前两项。
+  `AttachmentView` 在 `@contextmenu` 里 `preventDefault + stopPropagation`，否则会冒泡到
+  `MessageBubble` 的 `.line` 或 `App.vue` 的 window 兜底，弹出「刷新页面 / 复制页面链接 / 回到顶部 /
+  切换深浅色」这类跟图片毫无关系的总菜单 —— 这是用户反馈的实际问题。灯箱是 `Teleport to="body"`，
+  不在附件子树里，所以灯箱面板自己也要接 `@contextmenu`（`lightboxMenuItems()`）。
+- **灯箱（v2.6 重做）**：全屏深色（`rgba(6,9,12,0.96)`，`padding: 0`），**去掉白底面板/边框/圆角/阴影**
+  （用户说的「有边界」就是旧 `.lb__panel` 的 `border + border-radius:16px + background: var(--app-panel)`）。
+  顶部标题与右上角工具条改为绝对定位浮层 + 顶部渐变压暗；底部计数与「滚轮缩放 · 拖拽平移 · Esc 关闭」
+  提示也是浮层（触屏不显示该提示）。
+  缩放：滚轮（`exp(-deltaY/400)` 平滑）、`+`/`-`/`0` 键、双击在 1x↔2.5x 间切换、按钮 ±；范围 1x–6x，
+  **以光标位置为锚点**缩放（否则放大后目标总跑到屏幕外）。放大后可拖拽平移（`setPointerCapture`，
+  放大态 `cursor: grab/grabbing`，且关闭 `transform` 过渡以保证跟手）。切图/关闭自动复位到 1x。
+  灯箱必须保留 `.mask .panel` / `.panel__title` / `.lightbox__img` 三个类名，e2e 依赖它们。
 - **新增菜单 id 时注意**：`MessageBubble.vue` 的 `messageContextMenuItems()` 用 `switch (id)` 映射，
   联合类型新增成员 TS **不会**报未处理分支 —— 必须手动补 `case`，否则该项静默消失。
 

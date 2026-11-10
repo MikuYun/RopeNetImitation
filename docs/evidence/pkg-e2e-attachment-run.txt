@@ -1,0 +1,67 @@
+
+=== 附件端到端验证  BASE=http://localhost:5173  BACKEND=http://127.0.0.1:3099  RUN=4n2311 ===
+
+临时文件：photo=1917856B  thumb=7130B  note=1536B  big=52953088B（C:\Users\31626\AppData\Local\Temp\aitr-att-oTSzMD）
+
+会话：AB=a57f7e34-62f6-4563-b765-e36c1dbea52d
+
+
+──── ATT-01 图片上传（composer 附件入口 → 进度 → 上传完成 → 消息气泡内真渲染） ────
+PASS  A 侧进入 /chat 外壳
+PASS  选择文件后进入「上传中」态（.composer__att 出现且附件按钮 aria-label=正在上传）
+PASS  上传进度条真实渲染且产生中间值（.composer__att-track[role=progressbar]，aria-valuenow 单调推进）  —— progressSeen=true valuenow 序列=[0,10,45,79,100] 上传耗时=1131ms labels=["发送文件","正在上传"]
+PASS  上传完成：待发送区显示文件名与人类可读大小  —— photo-4n2311.png · 1.8 MB
+PASS  上传完成提示「图片已就绪，可发送」
+PASS  上传请求只发一次且带 filename 查询参数（凭据未进 URL）  —— 匹配 1 次；uploadPosts=1（基线 0）
+PASS  点击发送后图片消息气泡出现在正文区（.bubble--attach）  —— photo-4n2311.png
+PASS  A 侧图片真渲染：<img naturalWidth>0 且 src 是 blob: URL（证明带 Bearer 取流 + objectURL）  —— natural=1600x1200 src=blob:http://loca…
+PASS  图片消息气泡不再显示「文件名 · 大小」（v2.5：图片只有图，下载走右键菜单）  —— photo-4n2311.png（无可见文件名/大小，仅 sr-only）
+
+──── ATT-02 灯箱（点击缩略图放大 → .mask .panel → Esc 关闭 + 焦点归还） ────
+PASS  点击缩略图打开灯箱（.mask .panel 出现）
+PASS  灯箱标题 = 附件文件名  —— photo-4n2311.png
+PASS  灯箱内大图真加载（naturalWidth>0）  —— natural=1600x1200
+PASS  Esc 关闭灯箱（.mask .panel 移除）
+PASS  关闭后焦点归还到缩略图按钮（无障碍：弹层不得吞焦点）  —— activeElement=预览图片 photo-4n2311.png|att__thumb-btn
+
+──── ATT-03 B 侧 WS 实时收到 A 的图片消息 + 跨用户附件可见性（P0） ────
+PASS  B 侧进入 /chat 外壳
+PASS  B 侧 WS 实时收到 A 的文本消息（实时通道前置）  —— WS-PROBE-4n2311
+PASS  A 侧第二张图上传完成  —— thumb-4n2311.png
+PASS  B 侧实时收到 A 的图片消息（.bubble--attach 出现且含文件名）  —— thumb-4n2311.png
+PASS  B 侧能看到 A 图片的附件条目（图可读，无可见文件名/大小）  —— found=true visibleName="" srName=thumb-4n2311.png
+PASS  P0 跨用户可见：同会话成员取 A 的图片不返回 403（readUpload 共享放行）  —— 403 次数=0 形态=image
+FAIL  P0 跨用户可见：B 侧图片渲染为 .att--image 且 naturalWidth>0（未降级为文件卡片）  —— asImage=true asFile=false naturalW=0 skeleton=true
+
+──── ATT-04 txt 文件：卡片展示（名称 + 可读大小）+ 下载字节一致 ────
+PASS  txt 上传完成：待发送区显示文件名与大小  —— note-4n2311.txt · 1.5 KB
+PASS  发送后渲染为文件卡片（.att--file，非图片形态）  —— note-4n2311.txt
+PASS  文件卡片显示文件名与人类可读大小（v2.5 去掉「点击下载」文案，下载靠点击卡片）  —— name=note-4n2311.txt meta=1.5 KB
+PASS  文件卡片 title 含「文件名（大小）」且图标分类为 text  —— title=note-4n2311.txt（1.5 KB） icon=att__icon,att__icon--text
+PASS  点击文件卡片触发下载，且下载字节与上传内容完全一致（sha256 比对）  —— suggested=note-4n2311.txt bytes=1536/1536 sha=一致
+
+──── ATT-05 >50MiB 前端预检拦截（必须不产生上传网络请求） ────
+PASS  超限文件被前端拦下并给出明确 toast（含当前体积）  —— 文件超过 50.0 MB（当前 50.5 MB）
+PASS  超限提示是 error 语气（toast--error）  —— toast toast--error toast-enter-from toast-enter-active
+PASS  超限文件不进入上传态（.composer__att 不出现）
+PASS  超限文件**不产生任何上传网络请求**（POST /api/v1/uploads 计数不变）  —— before=3 after=3
+
+──── ATT-06 上传中取消（.composer__att-x title=取消上传） ────
+PASS  上传中：进度条 + 关闭按钮 title=取消上传
+PASS  上传请求已发出（取消前确实在飞）  —— posts=1
+PASS  取消后上传态清空、两个附件入口都恢复可点（发送图片 / 发送文件）
+PASS  取消是用户主动行为，不弹「上传失败」错误提示
+PASS  取消后可立即重新上传成功（AbortController 状态已复位）  —— uploads=1
+
+──── ATT-07 全程无脚本异常 / 无非预期 HTTP 错误 ────
+PASS  全程无未捕获脚本异常（pageerror）  —— []
+PASS  A 侧无 >=400 响应（401 除外）  —— []
+PASS  B 侧无其它 >=400 响应（跨用户取附件已共享放行，uploads 403 也不应出现）  —— []
+
+=== 汇总：38 项 —— 通过 37，失败 1，产品缺陷 0，待验 0 ===
+
+FAIL：
+  - P0 跨用户可见：B 侧图片渲染为 .att--image 且 naturalWidth>0（未降级为文件卡片）  —— asImage=true asFile=false naturalW=0 skeleton=true
+
+
+EXIT=1

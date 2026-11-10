@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
 import { buildApp } from '../src/app.ts';
+import { MAX_STICKER_BYTES } from '../src/upload.ts';
 
 type Context = Awaited<ReturnType<typeof buildApp>>;
 interface Account { token: string; user: { id: string; username: string }; expiresAt: string }
@@ -142,6 +143,37 @@ test('表情包：非图片上传与不存在/他人的 upload 一律 400 INVALI
   const missing = await call(backend, 'POST', '/api/v1/stickers', alice.token, { uploadId: randomUUID() });
   assert.equal(missing.statusCode, 400, missing.body);
   assert.equal(missing.json().error.code, 'INVALID_STICKER');
+});
+
+test('表情包：超过 2 MiB 的上传收藏时 413 STICKER_TOO_LARGE（服务端兜底客户端压缩）', async context => {
+  const { backend } = await fixture(context);
+  const alice = await register(backend, 'alice');
+
+  // 魔数仍是 PNG，但体积超过 MAX_STICKER_BYTES（2 MiB）：用尾部补零撑大，
+  // 这样 createUpload 的 50 MiB 上限不会先拦，能精确命中表情包自己的那道限制。
+  const oversized = Buffer.concat([PNG, Buffer.alloc(MAX_STICKER_BYTES)]);
+  const created = await upload(backend, alice.token, oversized, '超大有图.png');
+  assert.equal(created.statusCode, 201, created.body);
+  assert.equal(created.json().size, oversized.length);
+
+  const rejected = await call(backend, 'POST', '/api/v1/stickers', alice.token, { uploadId: created.json().id });
+  assert.equal(rejected.statusCode, 413, rejected.body);
+  assert.equal(rejected.json().error.code, 'STICKER_TOO_LARGE');
+  // 文案要能直接给用户看：说明是「单张表情」而非「单个文件」，并给出可执行动作。
+  assert.match(rejected.json().error.message, /表情包单张不能超过/);
+  assert.match(rejected.json().error.message, /裁剪|压缩/);
+
+  // 恰好等于上限的图必须放行 —— 边界不能写错成 >=。
+  const boundary = Buffer.concat([PNG, Buffer.alloc(MAX_STICKER_BYTES - PNG.length)]);
+  assert.equal(boundary.length, MAX_STICKER_BYTES);
+  const boundaryUpload = await upload(backend, alice.token, boundary, '刚好.png');
+  assert.equal(boundaryUpload.statusCode, 201, boundaryUpload.body);
+  const accepted = await call(backend, 'POST', '/api/v1/stickers', alice.token, { uploadId: boundaryUpload.json().id });
+  assert.equal(accepted.statusCode, 201, accepted.body);
+
+  // 超限的上传没有变成表情包，列表里只有边界那张。
+  const listed = await call(backend, 'GET', '/api/v1/stickers', alice.token);
+  assert.equal(listed.json().items.length, 1);
 });
 
 test('表情包：删除不存在 404、非本人 403，列表只返回本人', async context => {
